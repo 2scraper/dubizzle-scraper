@@ -355,15 +355,33 @@ actually buy here:
 * **Proxies** (`--proxy`, `--proxy-file`) — the same exit, your own browser.
   Use `region-ae`. A bigger pool of non-UAE addresses buys nothing.
 * **Captcha solving** (`--solve-captcha`, default `when-blocked`) — nothing
-  to solve here today, and that is a measurement rather than an assumption.
-  Across 15 captures this site rendered no reCAPTCHA, hCaptcha, Turnstile or
-  DataDome challenge to an anonymous visitor. But it **does** ship its own
-  captcha mount point — `<captcha-widgets></captcha-widgets>`, empty, on
-  every page including the good ones — so the right question is not "did we
-  meet one" but "is one wired up, and would we recognise it". The detectors
-  cover the shapes the site's own widget would take, and the bare tag is
-  deliberately **not** a marker: a marker that matches every good page is
-  worse than no marker.
+  to solve here, and that is measured rather than assumed. Across 17 captures
+  and 5 live runs this site rendered no challenge at all to an anonymous
+  visitor, and Imperva does not challenge either: it refuses outright, with
+  no widget and no form on either refusal page.
+
+  It **does** have one, though, and reading the site's own bundles says
+  exactly which. **Google reCAPTCHA**, site key
+  `6LeubLYqAAAAAK7-X6nc1fW2ggot_vTvQAv0RxdU`, which appears in dubizzle's
+  JavaScript as `RECAPTCHA_KEY` in the argument object handed to
+  `showAuthPopup(...)` — beside `GOOGLE_APP_ID` and `FACEBOOK_APP_ID` — and
+  as `recaptchaSiteKey` in the app config. `showAuthPopup` is called with
+  `intent: "login"` or `"phoneverify"`, so the captcha guards **signing in
+  and verifying a phone number**, not reading listings.
+
+  Two consequences worth stating. The version is **not** claimed here: none
+  of the site's 104 listing chunks carries the `recaptcha/api.js` loader or a
+  single `grecaptcha.*` call, so the `render=` parameter that settles v2
+  against v3 is not observable from anything this scraper fetches — the
+  widget belongs to a separate auth application the listing pages never
+  load. And the key itself IS a marker, because it is safe to be one: it
+  appears in 0 of 17 captures, so seeing it in a page means the site has
+  rendered its own challenge into it.
+
+  The empty mount point it would render into —
+  `<captcha-widgets></captcha-widgets>` — is on every page including the good
+  ones, so the bare tag is deliberately **not** a marker: one that matches
+  every good page is worse than no marker.
 * **Fingerprints** (`--fingerprint`) — a consistent device identity. Pass
   **one** OS-family tag to `--fp-tags` (`Windows`, `Microsoft Windows` or
   `Android`); the API rejects a list, and `Chrome`, `Desktop` and `Mobile`
@@ -412,7 +430,7 @@ All 2026-09-14, through a UAE residential exit unless stated.
 | Asset-host references, served page vs refusal | 126–2,571 vs **0** |
 | Scroll rounds needed | none — captures taken with 0 scrolls matched those taken with 4 |
 | Block-page shapes seen | 1,160 B (HTTP 403) and 6,183 B (HTTP **200**) |
-| Offline checks | 520 |
+| Offline checks | 525 |
 
 Everything except the DOM cross-check comes out of `__NEXT_DATA__`, which is
 in the first response and needs no JavaScript, so a readiness wait that times
@@ -464,7 +482,7 @@ to compare, not the positions.
 ## Testing
 
 ```bash
-python3 smoke_test.py        # 520 offline checks, no engine library needed
+python3 smoke_test.py        # 525 offline checks, no engine library needed
 pytest                       # the same checks, wrapped as one test
 python3 env_config.py        # what config was picked up, without secrets
 python3 .github/ci_checks.py --all          # what CI runs

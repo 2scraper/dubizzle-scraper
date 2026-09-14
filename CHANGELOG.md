@@ -41,7 +41,7 @@ layout survives.
   `.env` loading with documented precedence (`env_config.py`), captcha
   detection and solving (`captcha_solver.py`), 2Captcha fingerprints
   (`fingerprint_client.py`) and a two-run differ (`diff_runs.py`).
-- **520 offline checks** (`smoke_test.py`, wrapped for `pytest`), with every
+- **525 offline checks** (`smoke_test.py`, wrapped for `pytest`), with every
   fixture cut from a real capture by `make_fixtures.py` and verified to parse
   identically to the untrimmed original before being committed.
 - **CI**: the offline suite on the oldest and newest supported Python, a
@@ -87,6 +87,15 @@ UAE residential exit.
   row the DOM fallback produced.
 - **No scroll loop**, measured: captures taken with no scrolling at all
   carried the same counts as captures taken with four scroll rounds.
+- **The captcha is Google reCAPTCHA, and it guards the login flow, not the
+  listings.** Found by reading the site's own bundles rather than by guessing
+  from a vendor list: its key is `RECAPTCHA_KEY` in the argument object
+  handed to `showAuthPopup(...)`, called with `intent: "login"` or
+  `"phoneverify"`. Nothing this scraper fetches carries the loader, so the
+  v2-vs-v3 question is deliberately left unanswered rather than guessed. The
+  key is a marker — it appears in 0 of 17 captures, so its presence means the
+  site rendered its own challenge — while the empty
+  `<captcha-widgets>` mount point on every page deliberately is not.
 - **`dubizzle.com.bh`, `.om` and `.eg` are refused with the reason** — they
   carry the same brand and run the OLX platform, which publishes no
   `__NEXT_DATA__` and a different DOM. `dubizzle.com.lb` redirects to

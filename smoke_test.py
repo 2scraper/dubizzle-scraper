@@ -2034,6 +2034,36 @@ def test_captcha():
                 not any(product_parser.captcha_mount_is_populated(fx(n)[0])
                         for n in ("motors_p1", "property_rent", "classified",
                                   "jobs", "community")))
+    # WHICH captcha this site uses, found by reading its own bundles rather
+    # than by guessing from a vendor list (§18). Google reCAPTCHA, on the
+    # login / phone-verification flow, never on a listing.
+    # Against the raw tuple, not the lowercased set above: a reCAPTCHA key
+    # is case-sensitive and the page emits it verbatim, so the marker has to
+    # keep its case.
+    ok &= check("the site's own reCAPTCHA key is known and is a marker",
+                product_parser.RECAPTCHA_SITE_KEY.startswith("6L")
+                and product_parser.RECAPTCHA_SITE_KEY
+                in product_parser.BOT_CHALLENGE_MARKERS)
+    ok &= check("...and it is safe to be one: absent from every fixture, so "
+                "seeing it means the site rendered its own challenge",
+                not any(product_parser.RECAPTCHA_SITE_KEY in FIX[n]["html"]
+                        for n in FIX))
+    ok &= check("a page carrying it IS a challenge",
+                product_parser.detect_bot_challenge(
+                    '<div data-sitekey="%s"></div>'
+                    % product_parser.RECAPTCHA_SITE_KEY) is not None)
+    # The version is deliberately NOT claimed anywhere: the loader that would
+    # settle v2 against v3 lives in a separate auth application that a
+    # listing page never loads, so nothing this scraper fetches can observe
+    # it. Pinned so that nobody later writes a guess into the docs.
+    for name in ("README.md", "product_parser.py"):
+        text = open(os.path.join(REPO_ROOT, name), encoding="utf-8").read()
+        lowered = text.lower()
+        ok &= check("%s does not claim a reCAPTCHA version it cannot see"
+                    % name,
+                    "recaptcha v2" not in lowered
+                    and "recaptcha v3" not in lowered)
+
     # The extension's own hunters reference turnstile, arkoselabs and
     # recaptcha on EVERY page fetched over --cdp-endpoint: 3, 2 and 2
     # occurrences on a good motors page, and 0 of each after the extension

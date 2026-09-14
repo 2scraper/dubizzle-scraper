@@ -749,10 +749,38 @@ BOT_CHALLENGE_MARKERS = (
     "challenges.cloudflare.com/turnstile",
     "_Incapsula_Resource?SWCGHOEL",
     "Incapsula incident ID",
+    # dubizzle's OWN reCAPTCHA key (see RECAPTCHA_SITE_KEY below). Absent
+    # from 17 of 17 captures, so its appearance means the site rendered its
+    # own challenge into the page rather than that we recognised a vendor.
+    "6LeubLYqAAAAAK7-X6nc1fW2ggot_vTvQAv0RxdU",
 )
 
-# The site ships an EMPTY mount point on every page it serves —
-# `<captcha-widgets></captcha-widgets>`, 1 occurrence on all 15 captures,
+# WHICH CAPTCHA THIS SITE ACTUALLY USES, found by reading its own bundles
+# rather than by guessing from a vendor list (§18).
+#
+# Google reCAPTCHA. The key below is dubizzle's, and it is in the site's own
+# JavaScript twice — as `RECAPTCHA_KEY` in the argument object handed to
+# `showAuthPopup(...)`, beside `GOOGLE_APP_ID` and `FACEBOOK_APP_ID`, and as
+# `recaptchaSiteKey` in the app config. `showAuthPopup` is called with
+# `intent: "login"` or `"phoneverify"`, which is the whole story: the captcha
+# guards SIGNING IN and VERIFYING A PHONE NUMBER, not reading listings.
+#
+# That is why an anonymous listing scrape never meets it — 15 captures and 5
+# live runs, zero rendered challenges — and it is also why the version (v2 vs
+# v3) is NOT claimed here: none of the site's 104 listing chunks contains the
+# `recaptcha/api.js` loader or a single `grecaptcha.*` call. The widget is
+# rendered by a separate auth application that the listing pages never load,
+# so the loader's `render=` parameter, which is what settles v2 against v3
+# (§8), is not observable from anything this scraper fetches.
+#
+# Kept as a MARKER because it is safe to be one: the key appears in 0 of 17
+# captures, so its presence in a page's HTML means the site has rendered its
+# own challenge into the page we were given. Checked before adding, which is
+# the rule that keeps a marker from matching every good page.
+RECAPTCHA_SITE_KEY = "6LeubLYqAAAAAK7-X6nc1fW2ggot_vTvQAv0RxdU"
+
+# The site also ships an EMPTY mount point on every page it serves —
+# `<captcha-widgets></captcha-widgets>`, 1 occurrence on all 17 captures,
 # good pages included. So the bare tag is a fact about the site and not a
 # marker (§18), and it is deliberately absent from the list above. What a
 # rendered challenge would look like is the same element with something
