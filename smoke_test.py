@@ -1285,6 +1285,77 @@ def test_ci_checks_is_actually_wired_up():
     ok &= check("the secret check specifically is run",
                 "--secret-check" in workflows or "--all" in workflows)
 
+    # IT SCANS WHAT IS TRACKED, AT ANY SUFFIX — pinned because a suffix
+    # allowlist is how this check failed once. `--dump-html live_results`
+    # writes `live_results.page1`, a name with no suffix the old list knew,
+    # and a merge committed two of them at 1.5 MB each while this check ran,
+    # passed and never opened them. `.json` was not on the list either, so
+    # `fixtures_generated.json` and `sample_output.json` had never been
+    # scanned at all.
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("ci_checks", script)
+    ci = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(ci)
+    scanned = {os.path.relpath(p, REPO_ROOT) for p in ci.scanned_files()}
+    ok &= check("the working-tree scan reads the generated data files, which "
+                "a suffix allowlist never did",
+                {"fixtures_generated.json", "sample_output.json",
+                 "sample_output.csv"} <= scanned)
+    ok &= check("...and the workflows, the Dockerfile and the env example",
+                {".env.example", "Dockerfile"} <= scanned)
+    ok &= check("it asks GIT what is tracked, not the filesystem — a "
+                "developer's own .env and captures beside the scripts are "
+                "expected and must not turn it red",
+                ".env" not in scanned)
+
+    # A RAW CAPTURE MUST NOT BE TRACKED, whatever is inside it. The two that
+    # got through carried nothing of ours — no key, no proxy password, no
+    # cookie — so a content rule would have passed them. What was wrong was
+    # that they were committed at all.
+    ok &= check("a tracked page dump is refused by shape, not by name",
+                any(s.search("live_results.page7") for s in ci.CAPTURE_SHAPES)
+                and any(s.search("out_page1_debug.html")
+                        for s in ci.CAPTURE_SHAPES)
+                and any(s.search("captures/uae_usedcars_p1.html")
+                        for s in ci.CAPTURE_SHAPES))
+    ok &= check("and no such file is tracked here",
+                not [p for p in ci.tracked_files()
+                     if any(s.search(p.relative_to(ci.REPO).as_posix())
+                            for s in ci.CAPTURE_SHAPES)])
+
+    # The key-shaped-field rule applies EVERYWHERE, generated data included —
+    # it is what the bare-hex rule was reaching for, said precisely.
+    ok &= check("a secret in a key-shaped field is caught",
+                ci.KEY_SHAPED_FIELD.search(
+                    # Split so this file does not itself carry a bare 32-hex
+                    # run: the check it is testing scans this file too, and a
+                    # fixture that trips the rule it proves would either turn
+                    # the build red or force the rule to be widened.
+                    '"x-algolia-api-key": "%s%s"'
+                    % ("cdd839b4fdac8402", "89e88633779e8634")))
+    ok &= check("...and the scrubbed placeholder is not",
+                not ci.KEY_SHAPED_FIELD.search(
+                    '"x-algolia-api-key": "REDACTED-SEARCH-KEY"'))
+
+    # The bare-hex rule is deliberately NOT applied to the generated data
+    # files, and that exemption is pinned so it stays a decision: this site
+    # publishes 32-hex identifiers in at least five contexts, and a rule that
+    # fires 221 times on correct data is a rule somebody switches off.
+    ok &= check("the bare-hex rule exempts the generated data files, with "
+                "the corpus scan covering them instead",
+                set(ci.GENERATED_DATA_FILES) == {"fixtures_generated.json",
+                                                 "sample_output.json",
+                                                 "sample_output.csv"})
+    ok &= check("...but this site's public ad id is still subtracted from "
+                "every other file, in all three of its spellings",
+                not ci.HEX32.findall(ci._without_site_ids(
+                    '"url": "https://dubai.dubizzle.com/x/2026/1/1/'
+                    'a---ac0df37b468f4757aebf3a7c36ccf0a1/", '
+                    '"listing_uuid": "ac0df37b468f4757aebf3a7c36ccf0a1"')))
+    ok &= check("...and a hex the line never justified still fails",
+                ci.HEX32.findall(ci._without_site_ids(
+                    'key = "%s"' % ("deadbeefdeadbeef" * 2))))
+
     # AND IT PASSES ON THIS REPO. A check that is always red teaches everyone
     # to ignore checks; this one WAS red, on six documented placeholders.
     done = subprocess.run([sys.executable, script, "--all"],
