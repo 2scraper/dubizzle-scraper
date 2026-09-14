@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dubizzle-scraper"
 version = "0.1.0"
-description = "dubizzle auction scraper: category listings, search results, whole auctions and lot pages."
+description = "dubizzle UAE classifieds scraper: cars, property, electronics, jobs and community listings to JSON or CSV."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"

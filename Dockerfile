@@ -4,7 +4,7 @@
 #
 #   docker build -t dubizzle-scraper .
 #   docker run --rm -v "$PWD/out:/out" dubizzle-scraper \
-#     --url "https://uae.dubizzle.com/en/c/333-watches" \
+#     --url "https://uae.dubizzle.com/motors/used-cars/" \
 #     --pages 3 --out /out/mugs
 #
 # Pass --proxy/--twocaptcha-key the same way as running locally, or mount a

@@ -1,17 +1,17 @@
-# catawiki-scraper
+# dubizzle-scraper
 
-[![release](https://img.shields.io/github/v/release/2scraper/catawiki-scraper?sort=semver)](https://github.com/2scraper/catawiki-scraper/releases)
-[![tests](https://github.com/2scraper/catawiki-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/2scraper/catawiki-scraper/actions/workflows/tests.yml)
-[![canary](https://github.com/2scraper/catawiki-scraper/actions/workflows/canary.yml/badge.svg)](https://github.com/2scraper/catawiki-scraper/actions/workflows/canary.yml)
+[![release](https://img.shields.io/github/v/release/2scraper/dubizzle-scraper?sort=semver)](https://github.com/2scraper/dubizzle-scraper/releases)
+[![tests](https://github.com/2scraper/dubizzle-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/2scraper/dubizzle-scraper/actions/workflows/tests.yml)
+[![canary](https://github.com/2scraper/dubizzle-scraper/actions/workflows/canary.yml/badge.svg)](https://github.com/2scraper/dubizzle-scraper/actions/workflows/canary.yml)
 [![python](https://img.shields.io/badge/python-3.9%20%7C%203.13-blue)](pyproject.toml)
 [![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 [![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20pyppeteer%20%7C%20CDP-informational)](#engines)
 [![runs without an account](https://img.shields.io/badge/runs%20without-an%20account-brightgreen)](#do-you-need-any-of-the-paid-products)
 
-Scrapes [Catawiki](https://www.catawiki.com) auction lots — category listings,
-search results, whole auctions and single lot pages — to JSON or CSV, with
-four interchangeable browser back ends and one row schema shared with the rest
-of the [2scraper](https://github.com/2scraper) family.
+Scrapes [dubizzle](https://uae.dubizzle.com) UAE classifieds — cars, property,
+electronics, jobs and community services — to JSON or CSV, with four
+interchangeable browser back ends and one row schema shared with the rest of
+the [2scraper](https://github.com/2scraper) family.
 
 Everything below that states a number states when it was measured and on what.
 Anything not measured is not claimed.
@@ -20,31 +20,30 @@ Anything not measured is not claimed.
 
 ## The one thing to know first
 
-**This site refuses a headless browser, and no proxy fixes that.** Measured
-2026-09-10 against `/en/c/333-watches`:
+**The exit address has to be in the UAE.** Imperva fronts this site and
+refuses everything else. Measured 2026-09-14 against
+`/motors/used-cars/`:
 
 | Client | Exit address | Result |
 |---|---|---|
-| `curl` with a full browser header set | local (datacentre-classified) | **403**, 394 bytes |
-| `curl` with a full browser header set | residential NL | **403** |
-| Chromium **headless** | local | **403**, 308 bytes |
-| Chromium **headless** | residential NL (×3 exits) | **403** |
-| Chrome **headless** | residential NL | **403** |
-| Chrome **headful** | local (datacentre-classified) | **200**, 633 KB, 24 lots |
-| Chrome **headful** | residential NL (×2 exits) | **200**, 24 lots |
-| Scraping Browser API over CDP | residential NL | **200**, 637 KB, 24 lots |
+| `curl` with a full browser header set | European residential | **403**, 1,160 bytes, "Incapsula incident ID" |
+| Chrome **headful** | European residential | **403**, 885–1,196 bytes |
+| Python `requests`, browser UA | UAE residential | **200**, 6,183 bytes — "Pardon Our Interruption" |
+| 2Captcha Scraper API (no browser) | Finnish datacentre | **200**, 1,152 bytes — "Pardon Our Interruption" |
+| Chromium **headless** over CDP | UAE residential | **200**, **1.6 MB, the full catalogue** |
 
-Read it by column, not by row: the exit address changes nothing and the
-headless flag changes everything. So:
+Read it by column, not by row: the window makes no difference and the exit's
+**country** makes all of it. So:
 
-* **`--headful` is the default here**, unlike every sibling repo in this
-  family. A `--headless` default would be a scraper whose default cannot
-  fetch the site.
-* `--headless` is still accepted, because `--cdp-endpoint` ignores it and
-  because a change on the site would make it work again. It will report
-  exit 3 today.
-* A red run is much more likely to mean "headless" than "bad IP". The block
-  message says so rather than sending you to buy a proxy.
+* `--headless` is the default, as in the rest of this family. Every live run
+  in this repository was headless and was served.
+* **A refusal is not always an error status.** The "Pardon Our Interruption"
+  page is HTTP **200**. This scraper therefore decides "was this served at
+  all" from the page being built out of dubizzle's own asset hosts
+  (`static.dubizzle.com`, `dbz-images.dubizzle.com`) — 126 to 2,571
+  references on every page the site served, **0** on both refusals.
+* A red run means the exit, not the browser. The block message says which
+  and tells you the two ways to fix it.
 
 ---
 
@@ -74,109 +73,113 @@ Python 3.9 through 3.13; both ends are tested in CI.
 ## Usage
 
 ```bash
-# A category listing, three pages, JSON and CSV
+# Used cars, three pages, JSON and CSV
 python3 playwright_scraper.py \
-    --url 'https://www.catawiki.com/en/c/333-watches' \
-    --pages 3 --format both --out watches
+    --url 'https://uae.dubizzle.com/motors/used-cars/' \
+    --pages 3 --format both --out cars
 
-# A search
-python3 playwright_scraper.py --url 'https://www.catawiki.com/en/s?q=rolex' --pages 2
-
-# A whole auction — every lot at once, and see the note below on why this is
-# the best source of the four
+# Apartments for rent
 python3 playwright_scraper.py \
-    --url 'https://www.catawiki.com/en/a/1243988-figures-figurines-auction'
+    --url 'https://uae.dubizzle.com/property-for-rent/residential/apartmentflat/' \
+    --pages 2
 
-# One lot, in full: estimate, seller, specifications, both absolute times
-python3 playwright_scraper.py --mode lot \
-    --url 'https://www.catawiki.com/en/l/106583855-omega-de-ville-prestige'
+# Electronics
+python3 playwright_scraper.py \
+    --url 'https://uae.dubizzle.com/classified/electronics/televisions/'
 
-# The auctions index as a work list: one row per auction, feed the urls back in
-python3 playwright_scraper.py --mode auctions --url 'https://www.catawiki.com/en/a'
+# Arabic: the language is the URL, not a flag
+python3 playwright_scraper.py --url 'https://uae.dubizzle.com/ar/motors/used-cars/'
+
+# The site's own filters are part of the URL and survive pagination
+python3 playwright_scraper.py \
+    --url 'https://uae.dubizzle.com/motors/used-cars/?price_max=50000&year_min=2020'
 ```
 
 `puppeteer_scraper.py` and `selenium_scraper.py` take the same flags. See
 [engine differences](#engines).
 
-### Prefer auction pages to category pages
+### Pass a listing, not a hub
 
-An auction page (`/{locale}/a/{id}-{slug}`) carries **every one of its lots in
-one response** — 130 of 130 on the page measured — and beside them the
-auction's own `closeAt` and status. A category or search listing carries 24
-lots per page and states **no absolute time anywhere**, only a relative timer
-("3 days left"), which means nothing in a dataset read tomorrow. If you are
-monitoring prices, walk the auctions index and then the auctions.
+`https://uae.dubizzle.com/` and `/motors/` are **hub pages**: category tiles
+and promo rails, no result grid. A run against one honestly reports 0 rows
+and exit 4, and warns you what happened rather than leaving you to guess.
+The listings are one or two levels down, and every hub links to its own.
 
 ---
 
 ## What comes out
 
-One row per lot, same field order in JSON and CSV, the family prefix first
-(`source, scraped_at, url, sku, title, brand, price, currency,
+One row per advertisement, same field order in JSON and CSV, the family
+prefix first (`source, scraped_at, url, sku, title, brand, price, currency,
 original_price, discount_pct, rating, review_count, in_stock, image_url,
 category, price_source, page, position`) and this site's own columns after it.
 `sample_output.json` and `sample_output.csv` are cut from a real run.
 
-The columns that need explaining, because an auction is not a shop:
+The columns that need explaining, because a classifieds site is not a shop:
 
-**`price` means three different things, and `bid_kind` says which.**
+**`sku` is the ad's URL path, not an id — and that is measured, not
+stylistic.** This site numbers its verticals differently. A motors,
+classified, jobs or community URL ends in `---{32-hex uuid}`; a **property**
+URL ends in `-{city-id}-{ref}` and carries neither the listing's `id`
+(27794657) nor its dashed `uuid` (`b76a3b0a-ef13-…`) anywhere at all. An
+id-derived key would therefore be null on every property row the DOM fallback
+produced. The path is present on every row of every path — payload, JSON-LD
+and DOM alike — and a leading `/ar` is stripped, so an Arabic run and an
+English run of the same category diff as the same ads rather than as a
+wholesale replacement. `listing_id` and `listing_uuid` carry the site's own
+identifiers where it states them.
 
-| `bid_kind` | What `price` is |
+**A null `price` is often the site's answer, not a parse failure.** Measured
+2026-09-14, one page of each vertical:
+
+| Vertical | Rows with a price |
 |---|---|
-| `current` | the live high bid |
-| `final` | the last bid on a closed lot — a hammer price only if `sold` is also true |
-| `starting` | **nobody has bid**. A floor, not a bid. |
-| `null` | no price was published for this lot (see below) |
+| motors | 26/26 |
+| property-for-rent | 35/35 |
+| property-for-sale | 35/35 |
+| classified | 25/25 |
+| community | **1/25** — a services ad quotes on request |
+| jobs | **0/25** — a job ad publishes no salary at all |
 
-One captured lot reached €1,300 with `reserve_price_met` false and `sold`
-false: it changed hands for nothing at all. Treating `final` as a sale price
-without reading `sold` would put that €1,300 in a price history.
+So the price-coverage floor is **per vertical** and is 0 for jobs and
+community. `price_source` ends in `:no-price` on those rows, which
+distinguishes "the site published none" from "we failed to read one" where a
+bare null cannot.
 
-**A null price is normal and means a reserve.** Every blank price is a lot
-whose reserve has not been met — 57 of 57 blanks across 13 captures carried
-`reserve_price_set: true`, spread evenly through the page rather than
-clustered at its end. Price coverage was 87–100% on 24-lot category and search
-pages and 68% on a 130-lot auction with a heavier reserve mix, so **the useful
-check is the invariant, not a percentage**: a null price always carries
-`reserve_price_set`. The suite and the canary assert exactly that.
+**A rent's price is per period, and `payment_frequency` says which.**
+105,000 AED on an apartment is a year's rent. Reading it without that column
+would put yearly and monthly figures in one column and call them comparable.
 
-**`bid_count` is a floor.** The site returns the last ten bids and states no
-total; two lots with very different activity both reported exactly ten.
-`bid_count_is_floor` is what tells you which kind of number you have.
+**`listing_kind` marks the promoted slot.** Every motors page carries one
+"Car of the Week" that the site injects — including a page past the end of the
+listing. It is a real ad and is kept, but it is not a result, and it is
+emitted *after* the organic rows so that position 1 of each page is a real
+result.
 
-**`favorite_count` comes from the rendered card, not from the payload.** The
-payload's own `favoriteCount` reads 0 on 288 of 288 lots across 12 captures
-while the card shows the real figure on all 24 of each — a field that is
-present, authoritative-looking and uniformly wrong. Reading it would have
-shipped a column of zeros at 100% coverage.
+**`brand` is only where the site states one.** It comes from `brand.name` in
+a motors page's JSON-LD — the make the seller picked from the taxonomy. Null
+on property, jobs and community, where there is no manufacturer to name, and
+null on classified, whose pages publish no JSON-LD ItemList at all. It is
+deliberately not derived by splitting a title or reading the URL's make
+segment: both would be a guess wearing the costume of a fact.
 
-**`brand` is null on listing rows.** A listing title reads "Cartier - Tank
-Must de Cartier PM - No reserve price - ..."; splitting on the dash would be
-a guess presented as a fact. `--mode lot` fills it from the lot's own
-specification field.
+**`attributes` is one column, not forty.** Motors publishes up to 20 details
+per ad (body type, fuel, transmission, regional specs, warranty, …) and
+property publishes a different set; the key set is per-vertical and grows
+whenever the site adds a filter. The JSON output keeps the real object, the
+CSV writes it as compact JSON in one cell. `year` and `kilometers` are
+promoted out of it because they are what a car listing is actually compared
+on.
 
-**`price_source` records where the money came from**: `next_data+dom` on a
-listing (the payload for everything else, the rendered card for the amount),
-`next_data` in `--mode lot`, `dom` on the fallback path. `diff_runs.py`
-reports a price difference that comes with a `price_source` difference as
-`source_changed` rather than `changed`.
-
-**Relative times stay relative.** `time_left_text` is the card's own phrase,
-verbatim, in the page's language. It is not converted to a timestamp, because
-a listing page states nothing absolute and the conversion would be your
-clock dressed up as the site's fact. `bidding_start_at` / `bidding_end_at` are
-absolute and come from a lot page; `auction_close_at` is absolute and comes
-from an auction page.
-
-`--mode auctions` writes a different, deliberately thin row: `sku` (the
-auction id), `url`, `title`, `ends_text`, `slug`, `locale`. The index states
-no absolute time, no reliable lot count (the badge in the card's corner reads
-`+127` on one card and `18+` on the next), so those are not published from it.
-The auction's own page is the authority, and it carries its lots too.
+**`price_source` records which sources agreed.** `next_data+jsonld` where the
+page publishes both, `next_data` on the three verticals that publish no
+ItemList, `dom` on the fallback path. `diff_runs.py` reports a price
+difference that comes with a `price_source` difference as `source_changed`
+rather than `changed`.
 
 ### Exit codes
 
-`0` ok · `1` crash · `2` bad usage · `3` blocked · `4` zero lots · `5` remote
+`0` ok · `1` crash · `2` bad usage · `3` blocked · `4` zero ads · `5` remote
 API error · `6` partial. Every run writes `<out>.meta.json` beside its output
 with `status`, `stop_reason` and **which** pages failed by number. A failed
 run writes no sidecar and leaves the previous good output in place — a run
@@ -185,66 +188,137 @@ that finds nothing does not overwrite last night's data unless you pass
 
 ---
 
-## Locales
+## Where the data actually is
 
-18 of them, from the site's own `hreflang` set, all on `www.catawiki.com`
-under a path prefix: `en nl de fr it es pt da sv no pl el hu ro fi ja zh-Hans
-zh-Hant`. Live-verified: `en`, `de`, `nl`, `pl`, `ja`, `zh-Hant`.
+Three sources overlap on a listing page and none is a superset of the others.
+Measured across 12 captures and 195 ads, 2026-09-14:
 
-Three things about them that look like bugs and are not:
+| Vertical | payload hits | JSON-LD ItemList | tile price nodes |
+|---|---|---|---|
+| motors | 25 | 26 (`Vehicle`) | 26 |
+| property-for-rent | 35 | 35 (`RealEstateListing`) | 35 |
+| property-for-sale | 35 | 35 (`RealEstateListing`) | 35 |
+| classified | 25 | **0** | 25 |
+| jobs | 25 | **0** | 0 |
+| community | 25 | **0** | 0 |
 
-* **The category slug is translated** (`333-watches`, `333-horloges`,
-  `333-armbanduhren`) while the numeric id is stable. The id is the key; the
-  site canonicalises a foreign slug itself.
-* **Two locale codes carry capitals** — `zh-Hans`, `zh-Hant` — and are served
-  case-sensitively.
-* **Prices are in euro on every locale**, Japanese and Chinese included. Only
-  the written form changes: `€1,535` (en, ja, zh) · `€ 1.535` (nl, pl) ·
-  `1.535 €` (de). All five forms are pinned in the test suite.
+So **JSON-LD is not the primary path here**, against this family's default.
+It is absent on three of the six verticals, and a JSON-LD-primary parser
+would work on cars and flats and silently return nothing on half the site.
+The primary is the site's own SSR payload — `__NEXT_DATA__`, the Redux action
+`listings/fetchListingDataForQuery/fulfilled` — which carries every ad on
+every vertical plus the pagination contract, the ids and the attributes.
 
-`total` differs slightly by locale (11,681 on en/nl/de/pl against 11,675 on
-ja/zh-Hant, 2026-09-10), which is the site's own filtering, not a parse error.
+JSON-LD is read as an **enrichment**, and it earns its place: it is the only
+source for `brand`, the dealership's name and `offers.availability`, and its
+`priceCurrency` makes AED a stated fact rather than a symbol we recognised.
+
+It is joined on the ad's **locale-stripped path**, not on its URL. On an
+Arabic listing the two sources disagree about the address of the same ad: the
+JSON-LD publishes `/ar/motors/…` while the payload's own `absolute_url.ar` is
+byte-identical to its `.en` and carries no `/ar` at all. Keyed on the full
+URL the join matched 25 of 25 ads in English and **0 of 25 in Arabic**,
+emptying three columns while the run reported success.
+
+The DOM is the fallback, anchored on the ad-URL pattern rather than on a
+class (every class on a tile but `lpv-cards` is a build hash like
+`mui-style-1tufyr0`). It is a real path, not a comment: stripping the payload
+out of three captures and re-parsing recovered **26, 35 and 25 ads with the
+same skus and zero price disagreements**.
 
 ---
 
-## Pagination stops at 100 pages, and that is the site's limit
+## Languages, hosts and currency
 
-`?page=N`, and page 1's payload states `total` and `lotsPerPage` — so the page
-count is arithmetic and workers can be handed independent pages without
-following a chain.
+Two languages, from the site's own `hreflang` set: `en` (no prefix) and `ar`
+(an `/ar` path prefix). There is no third.
 
-But the site clamps: `?page=99999` on an 11,681-lot category returned HTTP
-**200** with `currentPage: 100` and page 100's own 24 lots. It does not fail
-and it does not empty. A planner that ignores the cap therefore re-fetches
-page 100 forever, adds no new `sku`, and a data-based terminator reads
-"listing exhausted" — a run reported **complete** holding 2,400 of 11,681
-lots. This scraper caps page planning at 100, on both the URL it builds and
-any link the site offers, and reports how many pages the catalogue has beyond
-the cap.
+Listings are browsed on `uae.dubizzle.com`; **individual ads are published on
+emirate subdomains** — `dubai.`, `abudhabi.`, `sharjah.`, `ajman.`, `rak.`,
+`uaq.`, `fujairah.`, `alain.`. The `url` column carries the address the site
+itself publishes rather than one rebuilt from the browsed host, and `city`
+carries the emirate as a fact about the ad.
 
-A search that matches nothing is a related trap: HTTP 200, the words "No
-results", **and 24 suggested lots** reported as `total: 24`. That state is
-detected from the payload's own `extended_search_result` flag and is **not
-parsed** — writing two dozen plausible rows for a query that matched nothing
-is worse than writing none.
+Prices are AED for every visitor. The tile splits them across two sibling
+nodes — `AED` in one and `389,000` in the next — so the DOM path reads the
+wrapper, not the price node alone.
+
+### The sites this scraper does NOT read
+
+`dubizzle.com.bh`, `dubizzle.com.om` and `dubizzle.com.eg` carry the same
+brand and run the **OLX platform**: no `__NEXT_DATA__` anywhere, a different
+DOM, a different ad-URL shape, and a `<title>` reading
+"دوبيزل (أوليكس)" — dubizzle (OLX). `dubizzle.com.lb` redirects to
+`olx.com.lb` outright. Measured 2026-09-14. Passing one of those URLs is
+refused **with that reason** rather than with "not a dubizzle site", which
+would be false and would send you hunting for a typo.
+
+---
+
+## Pagination
+
+`?page=N`, and three layers of evidence agree on it:
+
+1. Page 1 publishes `<link rel="next">` pointing at exactly
+   `…/motors/used-cars/?page=2` — what the convention builds.
+2. The fetched page 2 reports `pagination.page: 1`, the 0-based index of URL
+   page 2.
+3. Page 1's payload states `totalPages` outright.
+
+So every page's address is knowable up front and workers can be handed
+independent pages. **Past the end the site does not clamp, it empties:**
+`?page=401` and `?page=99999` on a 400-page listing both answered HTTP 200
+with `totalPages: 0, totalHits: 0`. That is a cleaner terminator than "this
+page added no new sku", because it is the site's own statement.
+
+**The site's page count is a cap, and it is not the same everywhere.** A
+motors listing of 34,619 ads publishes exactly 400 pages of 25 — so two
+thirds of that catalogue cannot be reached through pagination at all. Both
+property indexes publish 2,286 pages of 35. The scraper reports how many
+pages the catalogue has beyond the cap rather than swallowing the difference.
+The practical answer is the site's own filters: narrow by emirate, make,
+price band or year and run each slice.
+
+**One trap worth naming.** A page past the end still renders **one** ad — the
+promoted Car of the Week, with a price node, a JSON-LD item and a real listing
+URL. Parsing such a page would write a plausible phantom row for every page a
+run overshot by, so it is classified `empty` and deliberately not parsed.
 
 ---
 
 ## Engines
 
 Playwright is primary. All four back ends produce the same rows, the same
-columns in the same order, the same exit codes and the same run status —
-verified on a live two-page run: 48 rows each, identical `sku` sets, 44
-identical columns (2026-09-11).
+columns in the same order, the same exit codes and the same run status.
 
 | | Playwright | pyppeteer | Selenium | `--cdp-endpoint` |
 |---|---|---|---|---|
-| Live-verified here | yes | yes | yes | yes |
+| Live-verified here | yes | yes | block path only¹ | yes |
 | Authenticated remote CDP | yes | yes | **no** | — |
 | Authenticated proxy | yes | yes | **no** | n/a |
 | `--fingerprint`, `--fp-tags`, `--fp-country` | yes | no | yes | ignored |
 | `--locale` | yes | no | no | — |
 | `--chromium-path` | no | yes | no | — |
+
+There is a fifth entry point, `scraper_api_client.py` — one HTTP request per
+page through the 2Captcha Scraper API, no browser at all. **It does not get
+into this site**, and that is measured rather than assumed: four requests on
+2026-09-14 all came back with the 1,152/6,183-byte "Pardon Our Interruption"
+page, including two routed through a `country-ae` Scraping Browser session
+with `--cdp-url`. The API's own fetcher reported `x-country-code: FI`. It is
+kept for parity and reports the refusal honestly (exit 3, debug dump saved)
+rather than writing rows it did not get.
+
+¹ Selenium's content path was **not** live-verified for this release, and
+that is stated rather than implied: the machine this was built on could not
+give a local chromedriver a UAE exit, and Selenium cannot use the
+authenticated Scraping Browser endpoint that the other two engines use. What
+*was* exercised live is its refusal path end to end — it declines a
+credentialled `--cdp-endpoint` with exit 2 and the reason, and on a refused
+address it retries once, reports exit 3, saves the debug dump and refuses to
+overwrite a previous good output. Its content path is covered by the offline
+suite, which asserts it against the same fixtures and the same shared
+`page_flow` policy as the other two.
 
 * **Selenium cannot use an authenticated remote CDP endpoint.** Playwright's
   `connect_over_cdp` and pyppeteer's `browserWSEndpoint` take a full
@@ -255,7 +329,9 @@ identical columns (2026-09-11).
   stripped and a warning is printed. See the whitelist recipe below, which
   makes a proxy work in Selenium anyway.
 * **pyppeteer is effectively unmaintained** and its own README points at
-  Playwright. It is here for parity, not because it is a good idea.
+  Playwright. It is here for parity, not because it is a good idea. It also
+  prints asyncio teardown noise *after* a successful run has written its
+  output; the exit code is what to read.
 * Credentials never reach a command line or a log in any engine — including
   exception messages, which are logs. They are passed through the driver's own
   fields.
@@ -264,30 +340,30 @@ identical columns (2026-09-11).
 
 ## Do you need any of the paid products?
 
-**No.** A local headful Chrome on an ordinary connection returned 24 of 24
-lots with full price coverage, with no key, no proxy and no account
-(2026-09-10). Start there.
+**On this site, you need a UAE exit.** That is the one honest answer, and it
+is the opposite of what this family's README usually says. Everything else is
+optional.
 
 What the four separately billed [2Captcha](https://2captcha.com) products
-actually buy on this site:
+actually buy here:
 
-* **The Scraping Browser API** (`--cdp-endpoint`) — a remote browser, so you
-  run no browser infrastructure and get an exit in a country you choose.
-  Verified: 200 and the full catalogue from a residential Dutch exit, on
-  `--mode listing`, `--mode lot` and `--mode auctions`. One live connection
-  per `pid`, so `--concurrency` above 1 is refused with that reason; use
-  several pids.
-* **Proxies** (`--proxy`, `--proxy-file`) — volume from many addresses. They
-  do **not** get a headless browser in.
+* **The Scraping Browser API** (`--cdp-endpoint`, with `country-ae` in the
+  login) — a remote browser in the country the site serves, so you run no
+  browser infrastructure and get the exit that matters. This is the path
+  every live run in this repository used. One live connection per `pid`, so
+  `--concurrency` above 1 is refused with that reason; use several pids.
+* **Proxies** (`--proxy`, `--proxy-file`) — the same exit, your own browser.
+  Use `region-ae`. A bigger pool of non-UAE addresses buys nothing.
 * **Captcha solving** (`--solve-captcha`, default `when-blocked`) — nothing
-  to solve here today. Across 19 captures and 6 locales this site rendered no
-  reCAPTCHA, hCaptcha, Turnstile or PerimeterX challenge to an anonymous
-  visitor, and ships no captcha mount point or site key in its pages either.
-  The detectors are kept for the shapes a challenge would take, so an
-  appearance is recognised rather than reported as an empty page. Its
-  Content-Security-Policy does allow PerimeterX hosts, but nothing from them
-  appears on any page measured — a CSP is a statement of policy, not of
-  presence.
+  to solve here today, and that is a measurement rather than an assumption.
+  Across 15 captures this site rendered no reCAPTCHA, hCaptcha, Turnstile or
+  DataDome challenge to an anonymous visitor. But it **does** ship its own
+  captcha mount point — `<captcha-widgets></captcha-widgets>`, empty, on
+  every page including the good ones — so the right question is not "did we
+  meet one" but "is one wired up, and would we recognise it". The detectors
+  cover the shapes the site's own widget would take, and the bare tag is
+  deliberately **not** a marker: a marker that matches every good page is
+  worse than no marker.
 * **Fingerprints** (`--fingerprint`) — a consistent device identity. Pass
   **one** OS-family tag to `--fp-tags` (`Windows`, `Microsoft Windows` or
   `Android`); the API rejects a list, and `Chrome`, `Desktop` and `Mobile`
@@ -300,70 +376,68 @@ creates a contradiction rather than better cover.
 ### The proxy recipe that works in every engine
 
 Chromium cannot authenticate a SOCKS5 proxy (Playwright refuses at launch)
-and Selenium cannot authenticate any proxy. 2Captcha's IP-whitelist mode side-
-steps both: whitelist your address, then
+and Selenium cannot authenticate any proxy. 2Captcha's IP-whitelist mode
+side-steps both: whitelist your address, then
 
 ```bash
 curl "https://api.2captcha.com/proxy/generate_white_list_connections\
-?key=$TWOCAPTCHA_KEY&ip=YOUR.IP.HERE&protocol=socks5&connection_count=3&country=nl"
+?key=$TWOCAPTCHA_KEY&ip=YOUR.IP.HERE&protocol=socks5&connection_count=3&country=ae"
 ```
 
 returns one `host:port` per exit with **no credentials in them at all**. Save
 them to a file, pass `--proxy-file`, and the credential never enters your
-config. Measured 2026-09-11: three ports, three different residential Dutch
-addresses, working in Playwright, Selenium and pyppeteer alike — and active
-immediately, where the `protocol=http` connections generated the same way
-never answered.
+config.
 
 ---
 
 ## Measured on this site
 
-| | Value | When |
-|---|---|---|
-| Lots per listing page | 24 | 2026-09-10 |
-| Lots on the auction page measured | 130, in one response | 2026-09-10 |
-| Category `total` (`/en/c/333-watches`) | 11,638–11,681, and it moves | 2026-09-10/11 |
-| Pagination cap the site enforces | 100 pages | 2026-09-10 |
-| Price coverage, category and search | 87–100% | 2026-09-10 |
-| Price coverage, the 130-lot auction | 68%, all blanks reserve lots | 2026-09-10 |
-| Blank prices that were reserve lots | 57 of 57 | 2026-09-10 |
-| Bid history the site returns | last 10, no total | 2026-09-10 |
-| Hydration of the prices after commit | 1.9–2.4 s, all at once | 2026-09-10 |
-| Scroll rounds needed | none — 3 scrolls added 0 cards | 2026-09-10 |
-| JSON-LD blocks: category / search / lot | 1 (poor) / 0 / 0 | 2026-09-10 |
-| Live three-engine agreement | 48 rows, identical sku sets, 44 columns | 2026-09-11 |
+All 2026-09-14, through a UAE residential exit unless stated.
 
-The rows and everything except the money come from the site's own SSR payload
-(`__NEXT_DATA__`), which is present in the first response and needs no
-JavaScript at all — a run whose readiness wait times out loses the prices, not
-the rows. The amount, the bid state and the favourite count arrive with
-hydration: the server sends 24 card shells with 24 **empty** price nodes, so
-readiness here waits for a price node with something in it rather than for a
-card count, which would be satisfied instantly while every price is blank.
+| | Value |
+|---|---|
+| Ads per page | 25 (motors, classified, jobs, community) · 35 (both property indexes) |
+| Motors listing total / pages the site addresses | 34,619 ads / 400 pages — 985 pages beyond the cap |
+| Property listing total / pages | 206,372 ads / 2,286 pages |
+| Live run, Playwright, 2 pages of used cars | **52 rows, 52 distinct sku, exit 0, status complete** |
+| Live run, pyppeteer, 2 pages of televisions | **50 rows, exit 0, status complete** |
+| Price coverage on those runs | 26/26 and 25/25 per page |
+| Column coverage on the motors run | price, currency, brand, city, location, listing_id, uuid, short_url, attributes, posted_at, bumped_at, image, year, kilometers: 52/52 · seller_name 43/52 · seller_kind 50/52 |
+| JSON-LD ↔ payload agreement (motors, property) | 26/26 and 35/35 ads, no disagreement |
+| DOM-only re-parse vs payload | 26, 35 and 25 ads, same skus, **0 price disagreements** |
+| Asset-host references, served page vs refusal | 126–2,571 vs **0** |
+| Scroll rounds needed | none — captures taken with 0 scrolls matched those taken with 4 |
+| Block-page shapes seen | 1,160 B (HTTP 403) and 6,183 B (HTTP **200**) |
+| Offline checks | 485 |
+
+Everything except the DOM cross-check comes out of `__NEXT_DATA__`, which is
+in the first response and needs no JavaScript, so a readiness wait that times
+out costs the confirmation rather than the run.
 
 ---
 
 ## Traps that look like bugs
 
-* A **null price** is a reserve lot, not a parse failure (see above).
-* A **negative-looking discount** cannot happen: `discount_pct` is computed,
-  and returns null rather than 0 or a negative when the two figures are not
-  what they were taken for.
-* **`rating` and `review_count` are null on every row.** Catawiki publishes no
-  per-lot rating; the seller's feedback score is in `seller_score` and
-  `seller_feedback_count` on a `--mode lot` row. The two family columns are
-  kept so one schema works across the family.
-* **A lot page's DOM is not read**, on purpose: it renders 20–40 *other* lots
-  in a "similar lots" carousel using the same class a listing uses for its own
-  price, so "the first euro amount on the page" is a neighbour's number.
-* **`?page=2` on a lot or auction page does nothing** — neither has a second
-  page. `--concurrency` above 1 is refused there with that reason.
+* **A jobs run with no prices is correct.** 0 of 25, measured; the site
+  publishes no salary. Same for most community ads.
+* **A hub URL returns 0 rows and exit 4.** It has no result grid.
+  `/motors/` is a hub; `/motors/used-cars/` is a listing.
+* **`page=401` is not an error.** The site answers 200 with `totalHits: 0`
+  and still draws one promoted ad. That page is not parsed.
+* **`rating` and `review_count` are null on every row.** dubizzle rates
+  SELLERS on their profile page, never the individual ad. The two family
+  columns are kept so one schema works across the family.
+* **`bedrooms` is null on every car and `kilometers` on every flat.** That is
+  the vertical, not a parse failure — which is why `vertical` is a column.
+* **An ad's `url` is on a different host from the one you browsed.** Ads live
+  on emirate subdomains; the listing is browsed on `uae.dubizzle.com`.
+* **`category` is the ad's own taxonomy path**
+  (`motors/used-cars/mercedes-benz/a-class`), not the category you browsed —
+  it is a fact about the ad, and the browsed URL is in the run's sidecar.
 * **A `profile_locked` error from `--cdp-endpoint`** means another run still
   holds that `pid`. One live connection per profile.
-* An **empty price node containing a zero-width space** is the site's own
-  placeholder. It is treated as no price; a truthiness check on the node
-  would report 100% coverage and write an invisible character into every row.
+* **A first-fetch block that clears on a retry** is normal here; the first
+  live run of the Playwright engine did exactly that.
 
 ---
 
@@ -374,52 +448,58 @@ python3 diff_runs.py old.json new.json
 ```
 
 Compares by `sku` and refuses to compare runs that are not both `complete`,
-because a partial run's un-fetched pages otherwise read as delisted lots. It
-also refuses to compare two different `--mode` runs.
+because a partial run's un-fetched pages otherwise read as delisted ads.
 
-On an auction site, expect most differences between two runs to be auctions
-running rather than data changing: a lot's `bid_kind` moving `current` →
-`final` is a lifecycle transition, not a price change.
+On a classifieds site, expect some churn between two runs that is the market
+rather than the data: ads are bumped to the top by their sellers, so page
+membership moves even when nothing about an ad changed. The `sku` set is what
+to compare, not the positions.
 
 ---
 
 ## Testing
 
 ```bash
-python3 smoke_test.py        # 460+ offline checks, no engine library needed
+python3 smoke_test.py        # 485 offline checks, no engine library needed
 pytest                       # the same checks, wrapped as one test
 python3 env_config.py        # what config was picked up, without secrets
+python3 .github/ci_checks.py --all          # what CI runs
+python3 .github/ci_checks.py --history-check  # before making the repo public
 ```
 
-Every fixture in the suite is cut from a real capture and verified to parse
-identically to the untrimmed original before being embedded, and personal
-material is replaced with placeholders and guarded by patterns: a lot page's
-payload carries a per-bidder token, and an auction card names the human who
-curated it.
+Every fixture is cut from a real capture by `make_fixtures.py`, which
+verifies that each trim parses **identically** to the untrimmed original —
+every column, not a sample — before it is written. Personal and
+credential-shaped material is replaced with obvious placeholders and guarded
+by PATTERNS rather than by the literals one capture happened to hold, so the
+next capture is checked too: this site's pages carry a real estate agent's
+own name (34–35 per property page), a per-seller UUID (25–26 per motors
+page), the page's Algolia search key and its Sentry instrumentation.
 
-CI runs the offline suite on the oldest and newest supported Python, and builds
-**and runs** the Docker image — its entrypoint, a real Chromium launch, and a
-check that no `.env`, test suite or fixture was baked in.
+CI runs the offline suite on the oldest and newest supported Python, and
+builds **and runs** the Docker image — its entrypoint, a real Chromium launch,
+and a check that no `.env`, test suite or fixture was baked in.
 
 **What the canary badge here does and does not mean.** The workflow is a real
-three-page run against a real category URL, with a floor on the rows, the
-reserve invariant, page+position uniqueness and a dozen other assertions. But
-this repository deliberately holds **no live credential**, so the live steps
-are skipped and the job goes green with a `::notice::` saying why — a check
-that is always red teaches everyone to ignore checks, and a check that is
-always green teaches the same lesson more quietly. So read the green canary
-badge as *"the workflow is wired up"*, not as *"the site was verified today"*.
+three-page run against a real listing URL, with a floor on the rows,
+page+position uniqueness and a dozen other assertions. But this repository
+deliberately holds **no live credential**, so the live steps are skipped and
+the job goes green with a `::notice::` saying why — a check that is always red
+teaches everyone to ignore checks, and a check that is always green teaches
+the same lesson more quietly. So read the green canary badge as *"the workflow
+is wired up"*, not as *"the site was verified today"*.
 
 To make it do real work in your own fork, set one secret and change nothing
 else:
 
 ```bash
-gh secret set CATAWIKI_CDP_ENDPOINT --repo <your-org>/catawiki-scraper
+gh secret set DUBIZZLE_CDP_ENDPOINT --repo <your-org>/dubizzle-scraper
 ```
 
-Use a `pid` reserved for CI: a Scraping Browser profile allows one live
-connection, so a canary sharing a pid with a person's run gets
-`profile_locked` and reports a failure that has nothing to do with the site.
+Use a `pid` reserved for CI, with `country-ae` in the login: a Scraping
+Browser profile allows one live connection, so a canary sharing a pid with a
+person's run gets `profile_locked` and reports a failure that has nothing to
+do with the site.
 
 ---
 
@@ -431,4 +511,5 @@ for "the site changed". MIT licensed.
 
 This scraper reads public listing pages, obeys a `--delay` between requests
 (default on), and is meant for price monitoring and research. It does not log
-in, does not bid, and does not touch anything behind an account.
+in, does not post, does not contact sellers, and does not touch anything
+behind an account.

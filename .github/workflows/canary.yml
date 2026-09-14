@@ -6,31 +6,27 @@ name: canary
 # stays green throughout. This workflow is the other half — a real run
 # against a real listing URL — so a site-side break is caught here first.
 #
-# THIS CANARY CANNOT RUN A PLAIN HEADLESS ENGINE, AND THAT IS NOT PESSIMISM.
-# ------------------------------------------------------------------------
-# dubizzle is fronted by Akamai, and what it refuses is not the ADDRESS --
-# it is a headless browser. Measured 2026-09-10, same URL throughout:
+# THIS CANARY NEEDS A UAE EXIT, AND THAT IS NOT PESSIMISM.
+# -------------------------------------------------------
+# dubizzle is fronted by Imperva, and what it refuses is the ADDRESS — its
+# COUNTRY specifically. Measured 2026-09-14, same URL throughout:
 #
-#   curl, full browser header set, local exit     403, 394 bytes
-#   curl, full browser header set, residential    403
-#   headless Chromium, local exit                 403, 308 bytes
-#   headless Chromium, residential NL (x3 exits)  403
-#   headless Chrome channel, residential NL       403
-#   HEADFUL Chrome, local exit (datacentre-ish)   200, 633 KB, 24 lots
-#   HEADFUL Chrome, residential NL (x2 exits)     200, 24 lots
-#   Scraping Browser API, country-nl              200, 637 KB, 24 lots
+#   curl, full browser header set, European residential   403, 1,160 bytes
+#   HEADFUL Chrome, European residential                  403, 885-1,196 bytes
+#   requests + browser UA, UAE residential                200, 6,183 bytes,
+#                                                         "Pardon Our Interruption"
+#   2Captcha Scraper API (no browser), Finnish datacentre 200, 1,152 bytes,
+#                                                         "Pardon Our Interruption"
+#   HEADLESS Chromium over CDP, UAE residential           200, 1.6 MB, full grid
 #
-# Read it by column: the exit address changes nothing and the headless flag
-# changes everything. So a proxy secret would NOT be enough here -- which is
-# the opposite of the sibling repos, where the address is exactly what gets
-# scored -- and there are only two ways for a runner to get in: the Scraping
-# Browser API, or a real window under xvfb.
+# Read it by column: the window changes nothing and the exit country changes
+# everything. Note the third and fourth rows — **a refusal here can be HTTP
+# 200**, so neither this workflow nor the scraper may trust the status code.
 #
-# This canary gates on DUBIZZLE_CDP_ENDPOINT, the measured-working path. The
-# xvfb route is deliberately NOT used yet: it is plausible, since headful
-# passes even from a datacentre-classified address, but it has not been run
-# on an actual runner, and a canary built on an unverified assumption is a
-# check nobody can trust.
+# A plain GitHub runner is not in the UAE, so this canary gates on a
+# DUBIZZLE_CDP_ENDPOINT secret whose login carries `country-ae`. A proxy
+# secret with `region-ae` would work as well; the CDP path is the one
+# measured here.
 #
 # The live steps are SKIPPED, not failed, when the secret is absent. The job
 # goes green with a notice saying why. A check that is always red teaches
@@ -41,8 +37,9 @@ name: canary
 #
 # Use a `pid` reserved for CI. A profile allows ONE live connection, so a
 # canary sharing a pid with a person's run gets `profile_locked` (exit 5) and
-# reports a failure that has nothing to do with the site. This was measured:
-# two runs launched back to back against one pid, the second exited 5.
+# reports a failure that has nothing to do with the site. This was measured
+# while building the repo: a second connection to a live pid timed out for
+# twenty minutes.
 #
 # The secret is passed through the ENVIRONMENT, which env_config.py reads for
 # exactly this variable, rather than through a --cdp-endpoint flag. Two
@@ -53,18 +50,13 @@ name: canary
 # line for someone to forget to uncomment.
 #
 # ON DEMAND, NOT ON A SCHEDULE — forced by the credential rather than chosen.
-#
-# A Scraping Browser endpoint on this account does not survive a day: every
-# credential inherited from the sibling repos in this family was already
-# returning 401 `deny_no_user` when this repo was written. A daily cron
-# against a credential with that lifetime produces one of two useless
-# outcomes: a red badge every day (if a dead endpoint fails the job), or a
-# green badge every day that has tested nothing (if it does not). The second
-# is the more dangerous, because green reads as "the parser still works".
-#
-# So the schedule is off. Dispatch it by hand, with a fresh secret, when the
-# answer matters — before a release, or when someone reports the parser
-# missing a column.
+# A Scraping Browser endpoint on these accounts does not survive long: of the
+# credentials inherited from the sibling repos in this family, most were
+# already returning 401 when this repo was written. A daily cron against a
+# credential with that lifetime produces one of two useless outcomes: a red
+# badge every day, or a green badge every day that has tested nothing. The
+# second is the more dangerous, because green reads as "the parser still
+# works".
 #
 # Put the schedule back the day a long-lived credential exists:
 #     schedule:
@@ -86,12 +78,13 @@ jobs:
         if: env.HAVE_CDP != 'true'
         run: |
           echo "::notice::Skipping the live run: no DUBIZZLE_CDP_ENDPOINT secret is set."
-          echo "Akamai refuses a headless browser on this site with HTTP 403 and"
-          echo "a 394-byte Access Denied page, from every address measured -"
-          echo "residential exits included. A plain runner has no display, so a"
-          echo "run from here would be red every time whatever the state of the"
-          echo "code. Set a Scraping Browser API endpoint (with a pid reserved"
-          echo "for CI) to turn this canary on:"
+          echo "Imperva refuses this site to any exit outside the UAE - a European"
+          echo "residential address got HTTP 403 and a Finnish datacentre address"
+          echo "got a 'Pardon Our Interruption' page under HTTP 200. A GitHub"
+          echo "runner is neither, so a run from here would be red every time"
+          echo "whatever the state of the code. Set a Scraping Browser API"
+          echo "endpoint with country-ae in its login (and a pid reserved for CI)"
+          echo "to turn this canary on:"
           echo
           echo "    gh secret set DUBIZZLE_CDP_ENDPOINT --repo 2scraper/dubizzle-scraper"
           echo
@@ -112,29 +105,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-playwright.txt
 
-      - name: Scrape a real, known-good category listing
+      - name: Scrape a real, known-good listing
         id: run
         if: env.HAVE_CDP == 'true'
-        # A CATEGORY url, not a search — and on this site that is forced
-        # rather than preferred.
+        # A MOTORS listing, and the choice is deliberate on three counts:
         #
-        # A search listing has NO per-page addresses. It is one infinitely
-        # scrolling page, and `?page=2` on a search URL does not advance it,
-        # it EMPTIES the result set ("Oops, produk nggak ditemukan"). So a
-        # search canary could never exercise pagination, which is the thing
-        # this workflow most needs to watch. A category listing paginates
-        # with ?page=N, verified against a real page 2.
+        #  * it is the vertical that publishes the most — it is the only one
+        #    with a JSON-LD ItemList AND a payload AND rendered price nodes,
+        #    so a break in any of the three shows up here;
+        #  * it prices every row (26/26 measured), so a price floor means
+        #    something — which it would not on /jobs/, where 0 of 25 rows
+        #    carry a price and that is correct;
+        #  * it is deep enough that three pages are never the end of it
+        #    (34,619 ads, 400 pages), so `pages_completed` is a real check
+        #    rather than an accident of a short catalogue.
         #
         # --pages 3, not 1: with one page pagination is never exercised, so a
         # broken ?page= convention would stay invisible here — precisely the
-        # silent decay this workflow exists to catch. The site publishes no
-        # rel=next and no numbered anchors at all, so the URL convention and
-        # the run's own "this page added nothing new" terminator are all
-        # there is.
+        # silent decay this workflow exists to catch.
         #
-        # --retries 4: the remote target was measured closing mid-scroll on
-        # three of six captures and succeeding on the next attempt. The
-        # engine's own block-retry budget covers that; this leaves headroom.
+        # --retries 4: the first live run of this engine had page 1 come back
+        # blocked and cleared it on one re-fetch. The engine's own block-retry
+        # budget covers that; this leaves headroom.
         #
         # set +e: GitHub Actions runs `run:` steps as `bash -e`, so without
         # this a non-zero scraper exit aborts the script on THAT line and the
@@ -146,7 +138,7 @@ jobs:
         run: |
           set +e
           python3 playwright_scraper.py \
-            --url "https://uae.dubizzle.com/en/c/333-watches" \
+            --url "https://uae.dubizzle.com/motors/used-cars/" \
             --pages 3 --retries 4 --out canary_run --dump-html canary_run.html
           echo "exit_code=$?" >> "$GITHUB_OUTPUT"
 
@@ -160,9 +152,7 @@ jobs:
         # things that are nobody's bug:
         #
         #   * the SECRET EXPIRED. A Scraping Browser credential is not
-        #     forever — every one inherited from the sibling repos was
-        #     already dead when this repo was written. When it stops
-        #     authenticating the run exits 5.
+        #     forever. When it stops authenticating the run exits 5.
         #   * ACCESS IS INTERMITTENT PER PROFILE, and a profile allows one
         #     live connection. A canary that collides with a person's run
         #     exits 5 with `profile_locked`, which says nothing about the
@@ -174,9 +164,9 @@ jobs:
         #
         #   1  crashed
         #   2  the workflow's own arguments are wrong
-        #   4  served a page and parsed ZERO rows from a category listing
-        #      that holds 60 per page — the tile anchor moved, which is
-        #      exactly what this canary exists to catch
+        #   4  served a page and parsed ZERO rows from a motors listing that
+        #      holds 25 ads per page — the payload action or the tile anchor
+        #      moved, which is exactly what this canary exists to catch
         #
         # A warning must not read as a pass, either. Each one writes to the
         # step summary as well, so the run page says in words that the canary
@@ -187,12 +177,12 @@ jobs:
           tested=true
           case "$code" in
             0)
-              echo "OK — products parsed from a live run." ;;
+              echo "OK — ads parsed from a live run." ;;
             3)
               tested=false
-              echo "::warning::Blocked before parsing (exit 3) — an ACCESS condition, not a code defect, so this run is not failed. On this site a block means the site sent NOTHING: there is no challenge to solve and no key would help. Check the debug dump's byte count in the artefacts — 0 bytes means the request never got a response. Try a different --cdp-endpoint pid."
+              echo "::warning::Blocked before parsing (exit 3) — an ACCESS condition, not a code defect, so this run is not failed. On this site a block means the exit is not in the UAE: check that country-ae is in the endpoint's login. There is no challenge on the page to solve and no captcha key would help."
               echo "### Canary did NOT test anything (exit 3, blocked)" >> "$GITHUB_STEP_SUMMARY"
-              echo "The site did not serve the request, so the parser was not exercised. This is access, not a regression — but it also means the site-side check did not happen. On this site the first thing to check is whether the run was headless: a proxy will not fix that." >> "$GITHUB_STEP_SUMMARY" ;;
+              echo "The site did not serve the request, so the parser was not exercised. This is access, not a regression — the first thing to check is the exit's COUNTRY, not the browser." >> "$GITHUB_STEP_SUMMARY" ;;
             5)
               tested=false
               echo "::warning::Remote API error (exit 5) — the Scraping Browser endpoint refused the connection, so nothing was tested and this run is not failed. If the log says 'profile_locked', another run still holds this pid: give CI its own. Otherwise the DUBIZZLE_CDP_ENDPOINT secret has most likely expired and needs refreshing."
@@ -200,11 +190,11 @@ jobs:
               echo "The most likely cause is an expired \`DUBIZZLE_CDP_ENDPOINT\` secret. Refresh it, or remove it to go back to the explicit SKIP path." >> "$GITHUB_STEP_SUMMARY" ;;
             6)
               tested=false
-              echo "::warning::Partial run (exit 6) — some pages were gathered and the run then stopped early, usually the remote target closing mid-scroll. canary_run.meta.json names which pages failed. Not failed, because on this site that is an access condition; if it repeats on every run, suspect pagination instead."
+              echo "::warning::Partial run (exit 6) — some pages were gathered and the run then stopped early. canary_run.meta.json names which pages failed. Not failed, because on this site that is usually an access condition; if it repeats on every run, suspect pagination instead."
               echo "### Canary tested only PART of the run (exit 6)" >> "$GITHUB_STEP_SUMMARY"
               echo "See \`pages_failed\` in the sidecar artefact." >> "$GITHUB_STEP_SUMMARY" ;;
             4)
-              echo "::error::Ran fine but parsed 0 rows (exit 4) on a category listing that holds 60 products per page. Either the grid container (data-ssr=productsCategoryL2/L3SSR) or the tile anchor (a[data-testid=lnkProductContainer]) has moved — this is the regression this canary exists to catch. The HTML dump in the artefacts tells you which."
+              echo "::error::Ran fine but parsed 0 rows (exit 4) on a motors listing that holds 25 ads per page. Either the Redux action the payload lives in (listings/fetchListingDataForQuery/fulfilled) or the ad-URL pattern the DOM fallback anchors on has moved — this is the regression this canary exists to catch. The HTML dump in the artefacts tells you which."
               exit 1 ;;
             2)
               echo "::error::Bad usage (exit 2) — the workflow's own arguments are wrong, not the site."
@@ -227,135 +217,138 @@ jobs:
         # a collapse rather than on normal variation.
         run: |
           python3 - <<'EOF'
-          import json, re, sys
+          import json, sys
           from pathlib import Path
 
           PAGES_REQUESTED = 3
-          # 24 lots per listing page, measured on every capture and on three
-          # live runs, so three pages is 72. The floor is under two pages'
-          # worth: a short last page or a handful of lots closing mid-run
-          # cannot trip it, but a collapse can.
+          PER_PAGE = 25          # motors; property pages hold 35
+          # Three pages is 75 organic ads plus up to 3 promoted slots. The
+          # floor is under two pages' worth, so a short page cannot trip it
+          # but a collapse can.
           MIN_ROWS = 60
 
-          # Deliberately NO price-coverage floor. On this site a missing price
-          # is usually CORRECT -- it is a lot whose reserve has not been met,
-          # and 57 of 57 blanks across 13 captures carried
-          # `reserve_price_set: true`. Coverage was 87-100% on category pages
-          # and 68% on a reserve-heavy auction, so any percentage threshold
-          # would either miss a real break or fail on a normal run. The
-          # INVARIANT below replaces it and cannot be satisfied by accident.
           rows = json.loads(Path("canary_run.json").read_text())
           meta = json.loads(Path("canary_run.meta.json").read_text())
           fail = []
 
           if len(rows) < MIN_ROWS:
               fail.append(f"only {len(rows)} rows, expected about "
-                          f"{PAGES_REQUESTED * 24} across {PAGES_REQUESTED} pages")
+                          f"{PAGES_REQUESTED * PER_PAGE} across "
+                          f"{PAGES_REQUESTED} pages")
 
           skus = [r.get("sku") for r in rows]
           if len(set(skus)) != len(skus):
               fail.append(f"{len(skus) - len(set(skus))} duplicate sku(s) - the "
                           f"dedupe is not running")
 
-          # THE INVARIANT. A null price must be a reserve lot; anything else
-          # means the price node moved and the rows are quietly empty.
-          orphan = [r.get("sku") for r in rows
-                    if r.get("price") is None and not r.get("reserve_price_set")]
-          if orphan:
-              fail.append(f"{len(orphan)} row(s) have no price and no reserve "
-                          f"flag either: {orphan[:3]} - on this site every "
-                          f"blank price is a reserve lot, so the price node "
-                          f"has most likely moved")
+          # A motors page prices every ad: 26 of 26 on the captured page and
+          # on both pages of the live run. A floor is meaningful HERE, and
+          # would not be on /jobs/ where 0 of 25 is correct — which is why
+          # the canary URL is a motors listing.
+          priced = sum(1 for r in rows if r.get("price") is not None)
+          if rows and priced / len(rows) < 0.90:
+              fail.append(f"only {priced}/{len(rows)} rows carry a price; every "
+                          f"measured motors page priced every ad, so the price "
+                          f"read has most likely broken")
 
-          # The other direction: a price with no bid kind means the label the
-          # kind is resolved through has moved, and `price` would then be a
-          # number whose meaning nobody knows.
-          kindless = [r.get("sku") for r in rows
-                      if r.get("price") is not None and not r.get("bid_kind")]
-          if kindless:
-              fail.append(f"{len(kindless)} row(s) have a price with no "
-                          f"bid_kind: {kindless[:3]} - the status label or the "
-                          f"page's own translation store has changed")
-          kinds = {r.get("bid_kind") for r in rows} - {None}
-          if kinds - {"current", "final", "starting"}:
-              fail.append(f"unknown bid_kind(s) {sorted(kinds)}")
+          # A row with no price must carry no currency, and vice versa. A
+          # missing currency is null, never a default (§4).
+          mismatched = [r.get("sku") for r in rows
+                        if (r.get("price") is None) != (r.get("currency") is None)]
+          if mismatched:
+              fail.append(f"{len(mismatched)} row(s) have a price without a "
+                          f"currency or the reverse: {mismatched[:3]}")
+          currencies = {r.get("currency") for r in rows if r.get("currency")}
+          if currencies - {"AED"}:
+              fail.append(f"rows carry a currency other than AED "
+                          f"({sorted(currencies)})")
 
-          # Both halves of the row have to be present: the payload gives
-          # everything except the money, the hydrated card gives the money.
+          # Both sources have to be present on motors: the payload for
+          # everything and the page's JSON-LD for brand, seller and
+          # availability. If the join breaks, every row silently drops to
+          # `next_data` and three columns empty — which is exactly what an
+          # Arabic run did before the join was keyed on the path.
           sources = {r.get("price_source") for r in rows}
-          if sources - {"next_data+dom", "next_data"}:
-              fail.append(f"listing rows carry price_source {sorted(sources)} - "
-                          f"only the payload and the card are possible here")
-          if "next_data+dom" not in sources:
-              fail.append("no row has price_source 'next_data+dom' - nothing "
-                          "hydrated, so every price on the page was blank")
+          if sources - {"next_data+jsonld", "next_data", "dom",
+                        "next_data+jsonld:no-price", "next_data:no-price"}:
+              fail.append(f"rows carry an unknown price_source {sorted(sources)}")
+          if "next_data+jsonld" not in sources:
+              fail.append("no row has price_source 'next_data+jsonld' - the "
+                          "JSON-LD join has broken, so brand, seller_name and "
+                          "in_stock are silently empty")
 
-          # Fully populated on every measured run. Any of them collapsing
-          # means an anchor moved.
+          # Fully populated on every measured motors run. Any of them
+          # collapsing means an anchor moved.
           for field, floor in (("title", 0.98), ("sku", 1.0), ("url", 1.0),
                                ("category", 1.0), ("listing_kind", 1.0),
-                               ("auction_id", 0.98), ("image_url", 0.95),
-                               ("page", 1.0), ("position", 1.0),
-                               ("favorite_count", 0.90)):
+                               ("vertical", 1.0), ("listing_id", 1.0),
+                               ("listing_uuid", 1.0), ("short_url", 0.98),
+                               ("city", 0.98), ("location", 0.98),
+                               ("brand", 0.95), ("attributes", 0.95),
+                               ("posted_at", 0.98), ("bumped_at", 0.98),
+                               ("image_url", 0.95), ("year", 0.90),
+                               ("kilometers", 0.90),
+                               ("page", 1.0), ("position", 1.0)):
               got = sum(1 for r in rows if r.get(field) not in (None, ""))
               if rows and got / len(rows) < floor:
                   fail.append(f"{field} present on only {got}/{len(rows)} rows "
                               f"(floor {floor:.0%})")
 
-          # Columns only --mode lot can know. A listing row carrying one is
-          # claiming a fact its page does not state.
-          for field in ("seller_id", "seller_country", "seller_score",
-                        "seller_feedback_count", "estimate_min", "estimate_max",
-                        "bid_count", "bidding_end_at", "next_min_bid",
-                        "reserve_price_met", "sold", "brand", "in_stock"):
-              got = sum(1 for r in rows if r.get(field) is not None)
-              if got:
-                  fail.append(f"{got}/{len(rows)} listing rows have `{field}`, "
-                              f"which only --mode lot can know")
-
-          # A CATEGORY listing states no absolute time anywhere - only the
-          # card's relative timer. If these fill up, an auction page's markup
-          # is being read into category rows.
-          for field in ("auction_close_at", "auction_status"):
-              got = sum(1 for r in rows if r.get(field) is not None)
-              if got:
-                  fail.append(f"{got}/{len(rows)} category rows have `{field}` "
-                              f"- only an auction page publishes it")
-
-          # dubizzle has no per-lot rating and no was-price on a listing.
-          for field in ("rating", "review_count", "original_price",
-                        "discount_pct"):
+          # Columns this site does not publish on an ad at all. A listing row
+          # carrying one is claiming a fact its page does not state.
+          for field in ("rating", "review_count"):
               got = sum(1 for r in rows if r.get(field) is not None)
               if got:
                   fail.append(f"{got}/{len(rows)} rows have `{field}`, which "
-                              f"this site does not publish on a listing")
+                              f"this site publishes on a SELLER's profile and "
+                              f"never on an ad")
+          # Property-only columns on a motors run mean the wrong vertical's
+          # reader ran.
+          for field in ("bedrooms", "bathrooms", "size_sqft",
+                        "payment_frequency"):
+              got = sum(1 for r in rows if r.get(field) is not None)
+              if got:
+                  fail.append(f"{got}/{len(rows)} motors rows have `{field}`, "
+                              f"which only a property ad publishes")
 
+          # §4's guard, one line, and it catches the regression forever.
+          bad = [r.get("sku") for r in rows
+                 if r.get("original_price") is not None
+                 and r.get("price") is not None
+                 and r["original_price"] <= r["price"]]
+          if bad:
+              fail.append(f"{len(bad)} row(s) have an original_price at or "
+                          f"below their price: {bad[:3]}")
+          neg = [r.get("sku") for r in rows
+                 if r.get("discount_pct") is not None and r["discount_pct"] <= 0]
+          if neg:
+              fail.append(f"{len(neg)} row(s) have a zero or negative "
+                          f"discount: {neg[:3]}")
+
+          # sku is the ad's PATH here, not an id — see the README for why.
           bad_sku = [r.get("sku") for r in rows
-                     if not re.fullmatch(r"\d{6,}", r.get("sku") or "")]
+                     if not (r.get("sku") or "").startswith("/")]
           if bad_sku:
-              fail.append(f"{len(bad_sku)} sku(s) are not the site's numeric "
-                          f"lot id: {bad_sku[:3]}")
+              fail.append(f"{len(bad_sku)} sku(s) are not a listing path: "
+                          f"{bad_sku[:3]}")
+          # An ad's URL is on an emirate subdomain, never on the browse host.
+          bad_url = [r.get("sku") for r in rows
+                     if "uae.dubizzle.com" in (r.get("url") or "")
+                     or ".dubizzle.com" not in (r.get("url") or "")]
+          if bad_url:
+              fail.append(f"{len(bad_url)} row(s) have a URL that is not an ad "
+                          f"on an emirate subdomain: {bad_url[:3]} - the URL is "
+                          f"being rebuilt instead of read")
 
-          # Euro on every locale, and only where there is a price to carry it.
-          currencies = {r.get("currency") for r in rows if r.get("currency")}
-          if currencies - {"EUR"}:
-              fail.append(f"rows carry a currency other than EUR "
-                          f"({sorted(currencies)})")
-          mislabelled = [r.get("sku") for r in rows
-                         if r.get("price") is None and r.get("currency")]
-          if mislabelled:
-              fail.append(f"{len(mislabelled)} row(s) carry a currency with no "
-                          f"price: {mislabelled[:3]} - a missing currency must "
-                          f"be null, never a default")
-
-          # The zero-width placeholder must never reach a column. It is the
-          # site's own empty-price marker and it looks like data.
-          zw = [r.get("sku") for r in rows
-                for v in r.values()
-                if isinstance(v, str) and any(c in v for c in "\u200b\u200c\ufeff")]
-          if zw:
-              fail.append(f"{len(zw)} row(s) carry a zero-width character in a "
-                          f"field: {zw[:3]}")
+          # The promoted slot must be labelled. If it stops being, it merges
+          # into the results and repeats on every page of every run.
+          kinds = {r.get("listing_kind") for r in rows}
+          if kinds - {"organic", "car_of_the_week"}:
+              fail.append(f"unknown listing_kind(s) {sorted(kinds)}")
+          if "car_of_the_week" not in kinds:
+              fail.append("no row is labelled car_of_the_week - every motors "
+                          "page carries one, so the promoted slot is being "
+                          "passed off as a result")
 
           # `position` restarts at 1 on each page, so the pair is the key.
           pairs = [(r.get("page"), r.get("position")) for r in rows]
@@ -369,8 +362,7 @@ jobs:
               fail.append(f"pagination stopped after {meta.get('pages_completed')} "
                           f"of {PAGES_REQUESTED} pages (stop_reason="
                           f"{meta.get('stop_reason')!r}) - the ?page= convention "
-                          f"has probably broken, and this site publishes no "
-                          f"rel=next to fall back on")
+                          f"or the site's own rel=next has broken")
           pages_seen = {r.get("page") for r in rows}
           if len(pages_seen) < PAGES_REQUESTED:
               fail.append(f"rows came from only {sorted(pages_seen)} - a page was "
@@ -381,21 +373,21 @@ jobs:
               fail.append(f"run mode is {meta.get('mode')!r}, not 'listing'")
 
           # There is no scroll to check, and that is measured rather than
-          # forgotten: three scrolls to the document's own bottom added zero
-          # cards on every page kind. The assertion is the other way round -
-          # a scroll trace appearing here would mean an engine grew a loop
-          # back and is buying latency for nothing.
+          # forgotten: captures taken with no scrolling carried the same
+          # counts as captures taken with four rounds. The assertion is the
+          # other way round — a scroll trace appearing here would mean an
+          # engine grew a loop back and is buying latency for nothing.
           if meta.get("scroll"):
               fail.append("the sidecar records a scroll trace - no page kind on "
                           "this site needs one, so an engine has grown a loop "
                           "back")
 
-          priced = sum(1 for r in rows if r.get("price") is not None)
           for line in fail:
               print(f"::error::{line}")
           print(f"[canary] {len(rows)} rows, {priced} priced "
-                f"({100 * priced // max(len(rows), 1)}%, the rest reserve lots), "
-                f"kinds={sorted(kinds)}, status={meta.get('status')}, "
+                f"({100 * priced // max(len(rows), 1)}%), "
+                f"kinds={sorted(k for k in kinds if k)}, "
+                f"status={meta.get('status')}, "
                 f"pages={meta.get('pages_completed')}/{PAGES_REQUESTED}, "
                 f"currency={sorted(currencies)}")
           sys.exit(1 if fail else 0)

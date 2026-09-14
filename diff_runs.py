@@ -57,8 +57,8 @@ from output_writer import UNIQUE_BY_SKU_MODES
 # not a range. If variant pricing ever appears on a listing page, this is
 # where it goes.
 TRACKED_FIELDS = ("price", "original_price", "discount_pct", "currency",
-                  "in_stock", "bid_kind", "sold", "reserve_price_met",
-                  "buy_now", "auction_status")
+                  "in_stock", "payment_frequency", "is_premium",
+                  "seller_kind", "listing_kind")
 
 # The subset of TRACKED_FIELDS whose comparability depends on price_source
 # matching between the two runs — see diff_products.
@@ -171,27 +171,23 @@ def diff_products(old: List[dict], new: List[dict],
             if not field_changes:
                 continue
 
-        # AN AUCTION CLOSED, which is not a price change.
+        # A RE-LISTING RATHER THAN A REPRICE, which is what this
+        # site's version of a lifecycle event looks like.
         #
-        # This bucket exists because the thing being monitored here is not a
-        # shop's price list. A lot's `bid_kind` moves `current` -> `final`
-        # when bidding ends, and the amount beside it moves with it -- the
-        # last bid is simply higher than whatever the previous run saw. Both
-        # differences are one event, and reporting them as a price change
-        # would make every overnight diff of a live auction look like a
-        # repricing. `--fail-on-change` ignores this bucket for the same
-        # reason it ignores `source_changed`: it says something about time
-        # passing, not about the site.
+        # `listing_kind` moving between `organic` and `car_of_the_week` means
+        # the site put this ad in (or took it out of) its promoted slot. The
+        # ad did not change; its placement did. Reporting that as a change
+        # alongside a price move would make every diff of a motors listing
+        # show one bogus entry, because the promoted slot rotates daily.
         #
-        # A move in the other direction (`final` -> `current`) is NOT put
-        # here: a closed lot does not reopen, so that is a real anomaly and
-        # belongs in `changed` where someone will look at it.
-        kinds = (before.get("bid_kind"), after.get("bid_kind"))
-        if kinds == ("current", "final") or (kinds[0] == "starting"
-                                             and kinds[1] in ("current", "final")):
+        # `--fail-on-change` ignores this bucket for the same reason it
+        # ignores `source_changed`: it says something about the site's
+        # merchandising, not about the ad's price.
+        kinds = (before.get("listing_kind"), after.get("listing_kind"))
+        if kinds[0] != kinds[1] and set(kinds) <= {"organic", "car_of_the_week"}:
             lifecycle.append({
                 "sku": sku, "title": after.get("title"),
-                "bid_kind": {"old": kinds[0], "new": kinds[1]},
+                "listing_kind": {"old": kinds[0], "new": kinds[1]},
                 "changes": field_changes,
             })
             continue
@@ -226,7 +222,8 @@ def _print_summary(result: dict) -> None:
           f"{len(result['changed'])} changed, "
           f"{len(result['source_changed'])} not comparable on price, "
           f"{len(result.get('within_tolerance', []))} within the price "
-          f"tolerance, {len(result.get('lifecycle', []))} auction(s) closed.")
+          f"tolerance, {len(result.get('lifecycle', []))} promoted-slot "
+          f"move(s).")
     for p in result["added"]:
         print(f"  + {p.get('sku')}  {p.get('title')}  {p.get('price')} {p.get('currency')}")
     for p in result["removed"]:
@@ -240,12 +237,13 @@ def _print_summary(result: dict) -> None:
         print(f"  ~ {c['sku']}  {c['title']}  {moves}  [within --price-"
               f"tolerance-pct: an exchange-rate tick, not a price change]")
     for c in result.get("lifecycle", []):
-        kind = c["bid_kind"]
+        kind = c["listing_kind"]
         deltas = ", ".join(f"{f}: {v['old']!r} -> {v['new']!r}"
                            for f, v in c["changes"].items())
         print(f"  * {c['sku']}  {c['title']}  {deltas}  "
-              f"[bid_kind {kind['old']!r} -> {kind['new']!r}: the auction ran, "
-              f"so this is a lifecycle transition rather than a price change]")
+              f"[listing_kind {kind['old']!r} -> {kind['new']!r}: the site "
+              f"moved this ad in or out of its promoted slot, which is "
+              f"merchandising rather than a price change]")
     for c in result["source_changed"]:
         src = c["price_source"]
         deltas = ", ".join(f"{f}: {v['old']!r} -> {v['new']!r}" for f, v in c["changes"].items())

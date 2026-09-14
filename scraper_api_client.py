@@ -4,35 +4,38 @@
 One HTTP request per page, no local browser, no Playwright install. The
 2captcha Scraper API fetches the page from its own infrastructure and returns
 the HTML; this client parses it with the same `product_parser` the browser
-engines use, so the rows and columns are identical.
+engines use, so the rows and columns would be identical.
 
-WHAT IT GETS, AND WHAT IT CANNOT GET — measured 2026-09-11, $0.0005 a request
------------------------------------------------------------------------------
-    HTTP 200, 431 KB of HTML, 24 of 24 lots parsed
-    id, title, url, images, auction id, reserve flag, subtitle: all present
-    price: NULL ON EVERY ROW.  bid_kind: null.  favorite_count: null.
+IT DOES NOT GET IN ON THIS SITE, AND THAT IS MEASURED
+-----------------------------------------------------
+Measured 2026-09-14, $0.0005 a request, four requests:
 
-That split is structural rather than a bug, and it is the same split the
-browser engines work around. This site server-renders the card SHELLS and
-fills the money in at hydration: the first response carries 24
-`c-lot-card__price` nodes and every one of them is EMPTY. A browserless fetch
-returns exactly that response, so it gets the whole catalogue INVENTORY and
-none of the auction state.
+    plain request                       HTTP 200, 1,152 bytes,
+                                        "Pardon Our Interruption"
+    with --cdp-url pointing at a
+    country-ae Scraping Browser         HTTP 200, 6,183 bytes, the same page,
+                                        on both of two attempts
 
-`--wait-text` and `--wait-element` do not change it: the same request with
-`--wait-text €` came back the same size with the same 0 prices.
+Imperva refuses this site to any exit outside the UAE, and the API's own
+fetcher is not in the UAE — the `x-country-code` header on the plain
+response read `FI`. Routing the task through a Scraping Browser session with
+`--cdp-url` did NOT change the answer here, which is the interesting half:
+the same endpoint, connected to directly by `playwright_scraper.py`, is
+served the full 1.6 MB catalogue.
 
-So use this when you want ids, titles and urls cheaply — building a work
-list, checking whether a lot still exists, diffing an assortment — and use a
-browser engine when you want the bids. Every row it writes says so itself:
-`price_source` is `next_data`, never `next_data+dom`.
+So this client is kept for parity and for the day the site or the API
+changes, and it reports the refusal honestly — exit 3, with the debug dump
+saved — rather than writing rows it did not get. **Use a browser engine with
+a UAE exit.** `playwright_scraper.py --cdp-endpoint` is the path measured to
+work.
 
-Unlike the sibling repos, this path needs no `--cdp-url` to reach the site at
-all: the plain Scraper API request was served. Akamai refuses a HEADLESS
-BROWSER here, not a datacentre address, and this client is not a browser.
+If you try it anyway, note that the block page is served with **HTTP 200**,
+so neither this client nor the parser may trust the status code; both decide
+"was this served at all" from the page being built out of dubizzle's own
+asset hosts.
 
     python3 scraper_api_client.py \\
-        --url "https://uae.dubizzle.com/en/c/333-watches"
+        --url "https://uae.dubizzle.com/motors/used-cars/"
 
     # $TWOCAPTCHA_KEY is read from the environment or .env, so a key never
     # has to be typed — a secret in argv is readable by anything that can run

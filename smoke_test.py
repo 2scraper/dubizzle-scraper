@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
-"""smoke_test.py - the offline suite for catawiki-scraper.
+"""smoke_test.py - the offline suite for dubizzle-scraper.
 
-One file, plain functions, fixtures inline. No pytest, no conftest, no
-fixtures directory; `tests/test_smoke.py` wraps this as a single pytest test
-so `pytest` works as an entry point without a second copy of the checks.
+One file, plain functions; `tests/test_smoke.py` wraps it as a single pytest
+test so `pytest` works as an entry point without a second copy of the checks.
 
 It must pass with NO engine library installed at all, so every engine import
 is guarded and the skip is reported at the end - a suite that silently skips
 part of itself and still says "all passed" is the same defect as code that
 reports success without checking what it wanted actually happened.
 
-Every fixture below was cut from a real capture by `make_fixtures.py`, which
-is shipped beside this file and verifies that the trim parses IDENTICALLY to the
-untrimmed original -- price, bid kind, title, favourites, reserve flag and
-image url -- before it is embedded here. That check has already earned its
-keep: a first attempt kept only the first locale bundle of the page's own
-translation store, and the Japanese fixture came out with a null `bid_kind`
-on every row while the full capture resolved 21 of 24, because the `ja` page
-takes its card labels from an English fallback bundle.
+THE FIXTURES ARE IN `fixtures_generated.json`, NOT INLINE
+--------------------------------------------------------
+The family's rule is fixtures inline, and on most of these sites that works
+because a fixture is a few hundred bytes of markup. Here the fixture IS the
+SSR payload: one ad's entry in `__NEXT_DATA__` is 2-6 KB of JSON on its own,
+and a fixture has to carry two of them plus the page's JSON-LD, its
+pagination block and its tiles, or it stops exercising the join the parser is
+built on. `make_fixtures.py` cuts them from real captures and verifies that
+each trim parses IDENTICALLY to the untrimmed original - every column, not a
+sample - before writing anything.
 
-Personal material is replaced with obvious placeholders and guarded by
-PATTERNS rather than by the old literals, so the next capture's values are
-caught too: a lot page's payload carries `highestBidderToken` and a
-`bidderToken` per bid, and an auction card names the human who curated it.
+Personal and credential-shaped material is replaced with obvious placeholders
+and guarded by PATTERNS rather than by the literals one capture happened to
+contain, so the next capture is caught too. This site's pages carry four
+kinds: a real estate agent's own name (34-35 per property page), a per-seller
+UUID (25-26 per motors page), the page's Algolia search key, and its Sentry
+instrumentation with a public key and a release SHA.
 """
 import ast
 import builtins
@@ -975,14 +978,14 @@ def test_writers():
                                   set())) == 2)
 
     meta = run_meta("complete", "completed", 3, 3, "u", "u", 36,
-                    pages_failed=[], mode="listing", source="catawiki.com")
+                    pages_failed=[], mode="listing", source="dubizzle.com")
     ok &= check("the sidecar records status, mode and source",
                 meta["status"] == "complete" and meta["mode"] == "listing"
-                and meta["source"] == "catawiki.com")
+                and meta["source"] == "dubizzle.com")
     # A count stops being a description once a page can fail while later ones
     # succeed, so the sidecar names WHICH pages failed.
     meta = run_meta("partial", "blocked", 5, 3, "u", "u", 12,
-                    pages_failed=[2, 4], mode="listing", source="catawiki.com")
+                    pages_failed=[2, 4], mode="listing", source="dubizzle.com")
     ok &= check("the sidecar names which pages failed, by number",
                 meta["pages_failed"] == [2, 4])
     return ok
@@ -998,14 +1001,14 @@ def test_finish_run():
         code = finish_run(rows, p, "json", False, blocked=False,
                           stop_reason="completed", pages_requested=1,
                           pages_completed=1, pages_failed=[], mode="listing",
-                          source="catawiki.com", start_url="u", final_url="u")
+                          source="dubizzle.com", start_url="u", final_url="u")
         ok &= check("a complete run exits 0", code == 0)
 
         code = finish_run([], p + "b", "json", False, blocked=True,
                           stop_reason="blocked_no-response",
                           pages_requested=1, pages_completed=0,
                           pages_failed=[1], mode="listing",
-                          source="catawiki.com", start_url="u", final_url="u")
+                          source="dubizzle.com", start_url="u", final_url="u")
         ok &= check("a blocked run exits 3, not 4", code == EXIT_BLOCKED)
         # A FAILED run writes no sidecar: `save` leaves the previous good
         # output in place, and a "failed" sidecar beside good data would
@@ -1016,14 +1019,14 @@ def test_finish_run():
         code = finish_run([], p + "c", "json", False, blocked=False,
                           stop_reason="completed", pages_requested=1,
                           pages_completed=1, pages_failed=[], mode="listing",
-                          source="catawiki.com", start_url="u", final_url="u")
+                          source="dubizzle.com", start_url="u", final_url="u")
         ok &= check("a genuinely empty result exits 4, not 3",
                     code == EXIT_NO_PRODUCTS)
 
         code = finish_run(rows, p + "d", "json", False, blocked=False,
                           stop_reason="page_load_timeout", pages_requested=5,
                           pages_completed=2, pages_failed=[3], mode="listing",
-                          source="catawiki.com", start_url="u", final_url="u")
+                          source="dubizzle.com", start_url="u", final_url="u")
         ok &= check("a run with data that stopped early exits 6 (partial)",
                     code == EXIT_PARTIAL)
         ok &= check("a partial run still writes what it got",
@@ -1058,49 +1061,58 @@ def test_diff():
     ok &= check("...it is reported separately as source_changed",
                 any(c["sku"] == "3" for c in d.get("source_changed", [])))
 
-    # The auction columns are tracked, and `bid_kind` beside `price` is the
-    # point: without it a price difference is unreadable, because the same
-    # number means a live bid in one run and a closed lot's last bid in the
-    # next.
+    # What a classifieds diff has to track, and one thing it must NOT report
+    # as a price change.
     tracked = __import__("diff_runs").TRACKED_FIELDS
-    ok &= check("price and bid_kind are tracked together",
-                "price" in tracked and "bid_kind" in tracked)
-    ok &= check("the auction outcome columns are tracked",
-                {"sold", "reserve_price_met", "auction_status"} <= set(tracked))
-    # A closed auction is a LIFECYCLE transition, not a repricing: bid_kind
-    # moves current -> final and the amount moves with it, and reporting that
-    # as a price change would make every overnight diff of a live auction
-    # look like a repricing.
+    ok &= check("the money columns are tracked",
+                {"price", "original_price", "discount_pct", "currency"}
+                <= set(tracked))
+    ok &= check("so is the period a rent is quoted for — a yearly and a "
+                "monthly figure in one column are not comparable",
+                "payment_frequency" in tracked)
+    ok &= check("and the placement columns, which is how a promoted-slot "
+                "move is recognised",
+                {"listing_kind", "is_premium"} <= set(tracked))
+
+    # The promoted slot rotates. An ad moving in or out of it is
+    # merchandising, not a reprice, and reporting it as a change would put a
+    # bogus entry in every motors diff.
     import diff_runs as _dr
-    closed = _dr.diff_products(
-        [{"sku": "1", "price": 100.0, "bid_kind": "current",
-          "price_source": "next_data+dom"}],
-        [{"sku": "1", "price": 140.0, "bid_kind": "final",
-          "price_source": "next_data+dom"}])
-    ok &= check("current -> final lands in `lifecycle`, not in `changed`",
-                len(closed["lifecycle"]) == 1 and not closed["changed"])
-    # The other direction is an anomaly: a closed lot does not reopen.
-    reopened = _dr.diff_products(
-        [{"sku": "1", "price": 140.0, "bid_kind": "final",
-          "price_source": "next_data+dom"}],
-        [{"sku": "1", "price": 100.0, "bid_kind": "current",
-          "price_source": "next_data+dom"}])
-    ok &= check("final -> current is reported as a real change",
-                len(reopened["changed"]) == 1 and not reopened["lifecycle"])
-    # And a plain price move with no lifecycle change is still a change.
-    outbid = _dr.diff_products(
-        [{"sku": "1", "price": 100.0, "bid_kind": "current",
-          "price_source": "next_data+dom"}],
-        [{"sku": "1", "price": 120.0, "bid_kind": "current",
-          "price_source": "next_data+dom"}])
-    ok &= check("a new bid on an open lot is still a change",
-                len(outbid["changed"]) == 1)
-    # The sibling repo's from-price columns are NOT tracked, because they do
-    # not exist here: a card prints one amount, not a range.
-    ok &= check("no from-price columns are tracked (this site has none)",
+    promoted = _dr.diff_products(
+        [{"sku": "/a", "price": 100.0, "listing_kind": "organic",
+          "price_source": "next_data+jsonld"}],
+        [{"sku": "/a", "price": 100.0, "listing_kind": "car_of_the_week",
+          "price_source": "next_data+jsonld"}])
+    ok &= check("organic -> car_of_the_week lands in `lifecycle`, not in "
+                "`changed`",
+                len(promoted["lifecycle"]) == 1 and not promoted["changed"])
+    ok &= check("...and so does the move back out of the slot",
+                len(_dr.diff_products(
+                    [{"sku": "/a", "price": 100.0,
+                      "listing_kind": "car_of_the_week",
+                      "price_source": "next_data+jsonld"}],
+                    [{"sku": "/a", "price": 100.0, "listing_kind": "organic",
+                      "price_source": "next_data+jsonld"}])["lifecycle"]) == 1)
+
+    # A plain price move with no placement change is still a change — the
+    # bucket must not swallow the thing the tool exists for.
+    repriced = _dr.diff_products(
+        [{"sku": "/a", "price": 100.0, "listing_kind": "organic",
+          "price_source": "next_data+jsonld"}],
+        [{"sku": "/a", "price": 120.0, "listing_kind": "organic",
+          "price_source": "next_data+jsonld"}])
+    ok &= check("a seller dropping the price is still a change",
+                len(repriced["changed"]) == 1 and not repriced["lifecycle"])
+
+    # The sibling repos' auction and from-price columns are NOT tracked,
+    # because they do not exist here.
+    ok &= check("no auction columns are tracked (this site has none)",
+                not {"bid_kind", "sold", "reserve_price_met", "auction_status"}
+                & set(tracked))
+    ok &= check("no from-price columns are tracked (a card prints one amount)",
                 not {"price_is_from", "price_max"} & set(tracked))
-    ok &= check("...and Product does not declare them either",
-                not {"price_is_from", "price_max"}
+    ok &= check("...and Product declares neither family's extras",
+                not {"price_is_from", "price_max", "bid_kind", "sold"}
                 & {f.name for f in fields(Product)})
     return ok
 
@@ -1246,7 +1258,7 @@ def test_canary_separates_access_from_defect():
                 not re.search(r"^\s*-\s*cron:", wf, re.M))
     ok &= check("it is dispatchable by hand", "workflow_dispatch:" in wf)
     ok &= check("and the reason the schedule is off is written down",
-                "does not survive a day" in wf)
+                "does not survive long" in wf)
     ok &= check("the expired-secret case is named",
                 "expired" in wf.lower() and "refresh" in wf.lower())
     return ok
@@ -1866,7 +1878,7 @@ def test_captcha():
     widget = ('<captcha-widget data-captcha-type="recaptcha" data-version="v3" '
               'data-sitekey="6LcABCDEFGHIJKLMNOPQRSTUVWXYZ0123" '
               'data-action="submit"></captcha-widget>')
-    c = detect_recaptcha_v3(widget, "https://www.catawiki.com/")
+    c = detect_recaptcha_v3(widget, "https://uae.dubizzle.com/")
     ok &= check("a captcha-widget declaring v3 is detected",
                 c is not None and c.kind == "recaptcha_v3")
 
@@ -1876,7 +1888,7 @@ def test_captcha():
     ok &= check("a too-short sitekey is not accepted as a challenge",
                 detect_recaptcha_v3('<div data-sitekey="short" '
                                     'class="g-recaptcha"></div>',
-                                    "https://www.catawiki.com/") is None)
+                                    "https://uae.dubizzle.com/") is None)
     ok &= check("a page with no reCAPTCHA at all is not a challenge",
                 detect_recaptcha_v3(fx("motors_p1")[0], LISTING_URL) is None)
 
@@ -2055,14 +2067,14 @@ def test_env_config():
     # which carries no credential and is a working default.
     ok &= check("the example's default URL is usable as-is",
                 _placeholder_reads_unset(
-                    "https://www.catawiki.com/en/c/333-watches"
+                    "https://uae.dubizzle.com/motors/used-cars/"
                     "kopi-bubuk") is False)
 
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, ".env")
         with open(path, "w", encoding="utf-8") as f:
             f.write("TWOCAPTCHA_KEY=fromfile\n")
-            f.write("CATAWIKI_URL=https://www.catawiki.com/en/s?q=x\n")
+            f.write("DUBIZZLE_URL=https://uae.dubizzle.com/classified/electronics/televisions/\n")
             f.write("NOT_A_REAL_KEY=1\n")
 
         class A:

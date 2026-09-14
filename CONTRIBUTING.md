@@ -114,88 +114,89 @@ Then the rest of the presentation, in the order that matters:
 ## Pull requests
 
 **Add a test for the behaviour you are changing.** `smoke_test.py` is a single
-file of plain functions with inline HTML/JSON fixtures — no pytest, no
-conftest, no fixtures directory. Copy the nearest existing check and edit it.
+file of plain functions; its fixtures live beside it in
+`fixtures_generated.json` because on this site a fixture IS the SSR payload
+and one ad's entry is kilobytes of JSON (see `make_fixtures.py`). Copy the
+nearest existing check and edit it.
 
-Five properties in this repo exist because they were once absent and cost real
-time. Tests pin all five, so a PR that breaks one will fail rather than
-silently regress:
+The properties below exist because they were once absent, or were wrong in
+the repo this one was ported from, and cost real time. Tests pin all of them,
+so a PR that breaks one will fail rather than silently regress:
 
-- **`price` means three different things, and `bid_kind` says which.**
-  `current` is a live high bid, `final` is the last bid on a closed lot — a
-  hammer price only when `sold` is also true — and `starting` is a floor
-  nobody has bid. One captured lot reached €1,300 with its reserve unmet and
-  sold for nothing at all. The kind is resolved through the page's OWN
-  translation store (`lot_status_current_bid` and friends), not through a
-  table of 18 languages: two keys read "Current bid" in English and they are
-  different strings in Chinese, so a table built from the English page would
-  have matched nothing there.
-- **A null price is a reserve lot, not a failure.** 57 of 57 blank prices
-  across 13 captures carried `reserve_price_set: true`, spread through the
-  page rather than clustered at its end. So there is no price-coverage
-  threshold worth setting, and the check that matters is the INVARIANT: a
-  null price always carries the reserve flag. The canary asserts exactly
-  that.
-- **The empty-price placeholder is a ZERO-WIDTH SPACE.**
-  `.c-lot-card__price` is present on 24 of 24 cards while 2–3 hold nothing,
-  so a truthiness check on the node reports 100% coverage and writes an
-  invisible character into every row. Anything read out of a card goes
-  through the zero-width strip first.
-- **`favorite_count` comes from the rendered card, never from the payload.**
-  The payload's own `favoriteCount` reads 0 on 288 of 288 lots across 12
-  captures while the card shows the real figure on all 24 of each — present,
-  authoritative-looking and uniformly wrong.
-- **`bid_count` is a floor.** The site returns the last ten bids and states
-  no total; two lots with very different activity both reported exactly ten.
-  `bid_count_is_floor` is what says which kind of number it is.
-- **A lot page's DOM is not read.** It renders 20–40 OTHER lots in a
-  "similar lots" carousel using the same class a listing uses for its own
-  price, so "the first euro amount on the page" is a neighbour's number.
-  Every lot-mode column comes from the payload.
-- **Pagination is capped at 100 pages by the site**, and a request past the
-  cap returns page 100's own lots under HTTP 200 rather than failing. The cap
-  is enforced on the URL this repo builds AND on any link the site offers,
-  because without the second half a run reports COMPLETE holding 2,400 of
-  11,681 lots.
-- **A search that matches nothing returns 24 suggested lots** reported as
-  `total: 24`. That state is read off the payload's own
-  `extended_search_result` flag and is NOT parsed: two dozen plausible rows
-  for a query that matched nothing is worse than none.
-- **A block here is a HEADLESS browser, not a bad address.** HTTP 403 and a
-  394-byte "Access Denied" from four residential exits and one datacentre
-  one, against HTTP 200 and the full catalogue from the same addresses with a
-  real window. So `--headful` is the default, `RETRY_ON_BLOCKED` is False,
-  and the block message says so rather than sending someone to buy a proxy.
-  Block detection is INVERTED as well: a served page is recognised by the
-  site's own asset host, because Chromium's own network-error page carries
-  the site's hostname in its title and would pass any title check.
-- **A run that finds nothing writes nothing.** It must not replace a good output
-  file with `[]`. `--allow-empty` is the opt-out.
+- **The SSR payload is the primary source, not JSON-LD.** A JSON-LD ItemList
+  is published on motors and property and on NONE of classified, jobs or
+  community, so a JSON-LD-primary parser works on cars and flats and silently
+  returns nothing on half the site. JSON-LD is the enrichment, and is the
+  only source for `brand`, `seller_name` and `in_stock`.
+- **That enrichment is joined on the ad's locale-stripped PATH, not its
+  URL.** An Arabic page's JSON-LD publishes `/ar/motors/…` while its payload's
+  `absolute_url.ar` is byte-identical to its `.en` and carries no `/ar`.
+  Keyed on the URL the join matched 25 of 25 ads in English and **0 of 25 in
+  Arabic**, emptying three columns while the run reported success.
+- **`sku` is the ad's URL path.** Four of five verticals carry a 32-hex uuid
+  in the URL; a PROPERTY URL carries neither that ad's `id` nor its dashed
+  `uuid`, so an id-derived key would be null on every property row the DOM
+  fallback produced. `listing_id` and `listing_uuid` carry the site's own
+  identifiers where it states them.
+- **A null `price` is per-vertical, not per-bug.** 0 of 25 jobs ads and 1 of
+  25 community ads carry one; motors, property and classified priced every
+  row measured. So the price-coverage floor is a per-vertical table and is 0
+  for jobs and community, and those rows say so with a `price_source` ending
+  in `:no-price`. A single global threshold would either miss a real break or
+  fail on every healthy jobs run.
+- **A tile's price is split across two sibling nodes** — `AED` in one and the
+  digits in `[data-testid="listing-price"]` — so the DOM path reads the
+  WRAPPER. Reading the price node alone gets a number with no currency.
+- **A page past the end of a listing still renders ONE ad.** `?page=401`
+  answers HTTP 200 with `totalPages: 0, totalHits: 0` and draws the promoted
+  Car of the Week anyway, with a price node and a JSON-LD item. That page is
+  classified `empty` and NOT parsed, or a run that overshoots writes one
+  plausible phantom row per page.
+- **The promoted slot is labelled, not merged.** `listing_kind` is
+  `car_of_the_week` for it, and it is emitted AFTER the organic rows so that
+  position 1 of every page is a real result. It is the same ad on every page
+  of a run.
+- **Pagination is the site's own count**, read from `pagination.totalPages`,
+  and it differs per vertical: 400 pages of 25 on motors, 2,286 of 35 on both
+  property indexes. A hardcoded page size would mis-count property by 40%.
+  How many pages the catalogue has BEYOND that cap is reported rather than
+  swallowed.
+- **A block here is the exit's COUNTRY, not the browser.** A European
+  residential exit and a Finnish datacentre exit were both refused, headful
+  and headless alike; a UAE residential exit was served the full catalogue by
+  a headless browser. So `--headless` stays the default, `RETRY_ON_BLOCKED`
+  is True, and the block message talks about `region-ae` / `country-ae`.
+- **A refusal can be HTTP 200.** The "Pardon Our Interruption" page is served
+  with one, so block detection is INVERTED: a served page is recognised by
+  the site's own asset hosts (126–2,571 references, against 0 on both
+  refusals). That also catches Chromium's own network-error page, which
+  carries the site's hostname in its `<title>` and would pass any title
+  check.
+- **A marker that matches every page is not a marker.** `_Incapsula_Resource`
+  appears on pages dubizzle plainly served, and the site ships its own
+  `<captcha-widgets></captcha-widgets>` EMPTY on every page — so neither is
+  in the challenge set. What a rendered challenge looks like is the mount
+  point with something inside it, which is a function rather than a
+  substring. The extension-stripping guard IS load-bearing here, unlike in
+  two sibling repos: the Scraping Browser's auto-solve extension injects
+  turnstile, arkoselabs and recaptcha hunters into every page it loads, and
+  this repo's marker set can match them.
+- **A challenge marker is only consulted for a state already counted as
+  blocked.** An EMPTY page is a correct answer, and refining it into a block
+  is how a sibling repo reported exit 3 on a page the site had served.
+- **A run that finds nothing writes nothing.** It must not replace a good
+  output file with `[]`. `--allow-empty` is the opt-out.
 - **Exit codes are a contract**, not decoration: `0` ok, `1` crash, `2` bad
   usage, `3` blocked, `4` zero rows, `5` remote API error, `6` partial. A
   pipeline branches on these.
-- **An EMPTY page is never retried and never counted as blocked.** One page
-  past the end of a listing has no lots, and a no-results search has none of
-  its own; both are correct answers to the question that was asked.
+- **An EMPTY page is never retried and never counted as blocked.**
   `page_flow.STATE_POLICY` holds that for all three engines so they cannot
   disagree about it.
-- **A challenge marker is only consulted for a state already counted as
-  blocked**, and a marker that matches every page of the site is not a
-  marker at all. This has bitten twice in this family, and the second time
-  is why `akamai` is NOT in this repo's marker set: the string lives in the
-  response header (`server: AkamaiGHost`), not in the body of a good page or
-  a bad one — 0 occurrences in every capture. There is deliberately no
-  extension-stripping guard either: the Scraping Browser's auto-solve
-  extension does inject a recaptcha and a turnstile hunter into every page it
-  loads, but none of this repo's markers matches them even without
-  stripping, so the guard would be code that looks load-bearing and never
-  runs. Broaden the set and add the guard together.
+- **`page` and `position` together identify a row.** `position` restarts at 1
+  on each page, so a run that does not thread the page number through the
+  parser produces rows that collide silently.
 - **A sku already written by an earlier page of the same run is dropped, not
-  duplicated.** Unlike its sibling repos this DOES fire on healthy runs
-  here: page 1 and page 2 of one category listing shared exactly 3 products,
-  all three from the "cheaper products" carousel that appears on every page.
-  So a small non-zero drop count is expected and a large one is not. See
-  `dedupe_by_key` in `output_writer.py`.
+  duplicated.** See `dedupe_by_key` in `output_writer.py`.
 
 There is also a naming check: certain phrases are banned repo-wide and the suite
 fails naming them. If it trips, read the message — the phrase is wrong for a

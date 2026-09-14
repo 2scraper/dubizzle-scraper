@@ -12,31 +12,38 @@ body:
 
         A few things answer most reports faster than we can:
 
-        - **Everything exit 3?** Check whether the run was **headless** before
-          you check anything else. Akamai refuses a headless browser on this
-          site whatever the exit address — measured HTTP 403 from four
-          residential exits and one datacentre address, against HTTP 200 and
-          the full catalogue from those very same addresses with a real
-          window. `--headful` is the default here; a proxy does not fix it,
-          and `--cdp-endpoint` is the other path measured to work.
-        - **`price` null on some rows?** That is almost certainly correct:
-          every blank price is a lot whose reserve has not been met, and the
-          row carries `reserve_price_set: true` to say so. What is NOT
-          correct is a null price with no reserve flag — that one is worth
-          this issue.
-        - **Zero rows?** You may be on a page that has none: one page past the
-          end of a listing, or a search that matched nothing (that one answers
-          200 with "No results" **and 24 suggested lots**, which this scraper
-          deliberately does not parse). Both are exit 4 and correct answers.
-          See [TROUBLESHOOTING.md](../blob/main/TROUBLESHOOTING.md).
+        - **Everything exit 3?** Check the exit's **country** before you check
+          anything else. Imperva refuses this site to any address outside the
+          UAE — measured HTTP 403 from a European residential exit and a
+          "Pardon Our Interruption" page under HTTP **200** from a Finnish
+          datacentre exit, headful and headless alike, against HTTP 200 and
+          the full catalogue from a UAE residential exit with a HEADLESS
+          browser. Use `--proxy` with `region-ae`, or `--cdp-endpoint` with
+          `country-ae`. The window is not the variable here.
+        - **`price` null on some rows?** Check which vertical. A **jobs** ad
+          publishes no salary at all (0 of 25 measured) and a **community**
+          services ad usually publishes no fee (1 of 25); those rows say so
+          with a `price_source` ending in `:no-price`. A null price on
+          motors, property or classified is worth this issue.
+        - **Zero rows?** You may be on a page that has none: a **hub** URL
+          (`https://uae.dubizzle.com/`, `/motors/`) carries category tiles and
+          no result grid, and one page past the end of a listing answers 200
+          with `totalHits: 0` — and still draws one promoted ad, which this
+          scraper deliberately does not parse. Both are exit 4 and correct
+          answers. See [TROUBLESHOOTING.md](../blob/main/TROUBLESHOOTING.md).
         - **`rating` and `review_count` empty on every row?** Expected: this
-          site publishes no per-lot rating. The seller's feedback is in
-          `seller_score` and `seller_feedback_count` on a `--mode lot` row.
-        - **The run stopped at page 100?** That is the site's own cap, not a
-          bug. Past it the site returns page 100's own lots under HTTP 200.
-        - **Wrong language?** The locale is a path segment (`/en/`, `/nl/`,
-          `/de/`), not something the exit IP decides. Prices are in euro on
-          all 18 locales.
+          site rates SELLERS on their profile page and never the individual
+          ad. The two columns are kept because the family's schema has them.
+        - **`bedrooms` empty on a car, `kilometers` empty on a flat?**
+          Expected — that is the vertical, not a parse failure, which is why
+          `vertical` is a column.
+        - **The run stopped short of the catalogue?** That is the site's own
+          cap. A motors listing of 34,619 ads publishes 400 pages of 25, so
+          two thirds of it is unreachable through pagination; the run reports
+          how many pages are beyond the cap. Narrow it with the site's own
+          filters and run each slice.
+        - **Wrong language?** The language is a path segment (`/ar/`), not
+          something the exit IP decides. Prices are AED for every visitor.
 
   - type: dropdown
     id: engine
@@ -84,7 +91,7 @@ body:
       render: shell
       placeholder: |
         python3 playwright_scraper.py \
-          --url "https://uae.dubizzle.com/en/c/333-watches" \
+          --url "https://uae.dubizzle.com/motors/used-cars/" \
           --pages 3 --out grills
     validations:
       required: true
