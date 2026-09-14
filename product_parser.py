@@ -40,12 +40,17 @@ returns nothing on everything else. The payload —
 every vertical, plus the pagination contract, the ids and the per-vertical
 attributes.
 
-JSON-LD is read as an ENRICHMENT, joined on the absolute URL, and it is worth
-reading: it is the only place `brand`, the dealership's name and
-`offers.availability` are stated, and its `priceCurrency` makes the currency
-a fact rather than a symbol we recognised. On motors and property the two
-sources named exactly the same 26 and 35 URLs with no disagreement, which is
-what `price_source` records.
+JSON-LD is read as an ENRICHMENT, joined on the ad's locale-stripped PATH,
+and it is worth reading: it is the only place `brand`, the dealership's name
+and `offers.availability` are stated, and its `priceCurrency` makes the
+currency a fact rather than a symbol we recognised. On motors and property
+the two sources named exactly the same 26 and 35 ads with no disagreement,
+which is what `price_source` records.
+
+The PATH rather than the URL, and that is not tidiness: on an ARABIC listing
+the two sources disagree about the address of the same ad. Keyed on the full
+URL the join matched 25 of 25 in English and 0 of 25 in Arabic — silently
+emptying three columns while the run reported success.
 
 The DOM is the fallback, anchored on the listing URL pattern rather than on a
 class: every class on a tile except `lpv-cards` is a build hash
@@ -738,11 +743,39 @@ BOT_CHALLENGE_MARKERS = (
     "recaptcha/api.js",
     "recaptcha/api2/anchor",
     "recaptcha/api2/bframe",
+    "data-sitekey",
     "hcaptcha.com/1/api.js",
+    "hcaptcha.com/captcha",
     "challenges.cloudflare.com/turnstile",
     "_Incapsula_Resource?SWCGHOEL",
     "Incapsula incident ID",
 )
+
+# The site ships an EMPTY mount point on every page it serves —
+# `<captcha-widgets></captcha-widgets>`, 1 occurrence on all 15 captures,
+# good pages included. So the bare tag is a fact about the site and not a
+# marker (§18), and it is deliberately absent from the list above. What a
+# rendered challenge would look like is the same element with something
+# INSIDE it, which is a structural question and therefore a function rather
+# than a substring.
+_CAPTCHA_MOUNT_RE = re.compile(
+    r"<captcha-widgets[^>]*>(?P<inner>.*?)</captcha-widgets>", re.S | re.I)
+
+
+def captcha_mount_is_populated(html: Optional[str]) -> bool:
+    """Whether the site's own captcha mount point has rendered anything.
+
+    Asked rather than assumed: "did we meet a challenge" and "is one
+    configured" are different questions (§18), and on this site the answer to
+    the second is yes while the answer to the first has been no on every
+    capture taken.
+    """
+    if not html:
+        return False
+    for m in _CAPTCHA_MOUNT_RE.finditer(_without_extension_scripts(html)):
+        if m.group("inner").strip():
+            return True
+    return False
 
 # The Scraping Browser's auto-solve extension injects its own hunters into
 # every page it loads, so a challenge marker can be OURS rather than the
@@ -782,6 +815,8 @@ def detect_bot_challenge(html: Optional[str], url: str = "") -> Optional[str]:
     for marker in BOT_CHALLENGE_MARKERS:
         if marker in stripped:
             return marker
+    if captcha_mount_is_populated(html):
+        return "<captcha-widgets> rendered a challenge"
     return None
 
 

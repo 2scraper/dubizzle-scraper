@@ -48,26 +48,27 @@ import env_config
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from output_writer import (Product, Auction, save, finish_run, write_csv,
+from output_writer import (Product, save, finish_run, write_csv,
                            dedupe_by_key, dedupe_by_sku, run_meta,
                            ROW_CLASS_BY_MODE, UNIQUE_BY_SKU_MODES,
                            EXIT_BLOCKED, EXIT_NO_PRODUCTS, EXIT_PARTIAL,
                            EXIT_API_ERROR, COMPLETE_STOP_REASONS,
                            LIST_CSV_SEPARATOR)
+from bs4 import BeautifulSoup
+
 import product_parser
-from product_parser import (parse_products, parse_lot_page, auction_metadata,
-                            auction_rows, auction_links, page_url,
+from product_parser import (parse_products, page_url,
                             paginates_by_url, category_from_url, listing_kind,
                             site_host, is_supported_host, host_currency,
                             locale_of, LOCALES, HOSTS, CURRENCY, PAGE_CAP,
                             detect_page_state, detect_bot_challenge,
-                            detect_block_marker, served_by_catawiki,
+                            detect_block_marker, served_by_dubizzle,
                             is_no_results, page_number_from_url, total_results,
                             total_pages, pages_beyond_cap, search_header,
                             sku_from_url, unsupported_reason, strip_tracking,
-                            prices_in, price_in, bid_kind_labels, next_data,
-                            lots_payload, SELECTORS, BLOCK_MARKERS,
-                            BOT_CHALLENGE_MARKERS)
+                            prices_in, price_in, next_data,
+                            listings_payload, vertical_of, SELECTORS,
+                            BLOCK_MARKERS, BOT_CHALLENGE_MARKERS)
 import page_flow
 from proxy_pool import (ProxyPool, mask, to_playwright, split_credentials,
                         parse_proxy_line)
@@ -143,11 +144,6 @@ FIX_FINGERPRINT = {
                "deviceScaleFactor": 1},
 }
 
-CAT_URL = "https://www.catawiki.com/en/c/333-watches"
-SEARCH_URL = "https://www.catawiki.com/en/s?q=rolex"
-AUCTION_URL = "https://www.catawiki.com/en/a/1243988-figures-figurines-auction"
-AUCTIONS_URL = "https://www.catawiki.com/en/a"
-LOT_URL = "https://www.catawiki.com/en/l/106583855-omega-x"
 
 # The exact tags the 2Captcha Scraping Browser's auto-solve extension injects
 # into every page it loads, copied from a CDP capture of a page the site
@@ -162,363 +158,315 @@ EXTENSION_TAGS = (
 )
 
 # ---------------------------------------------------------------------------
-# FIXTURES - cut from real captures, verified identical, personal data scrubbed
+# FIXTURES — cut from real captures by make_fixtures.py, which verifies that
+# each trim parses IDENTICALLY to the untrimmed original, column for column,
+# and scrubs the agent names, per-seller UUIDs and search key out first.
+#
+# Loaded from `fixtures_generated.json` rather than pasted inline, and the
+# reason is this site rather than a preference: the fixture IS the SSR
+# payload, one ad's entry is 2-6 KB of JSON on its own, and a fixture that
+# carried fewer than two ads plus the page's JSON-LD would stop exercising
+# the join the parser is built on. See make_fixtures.py's docstring.
 # ---------------------------------------------------------------------------
-LISTING_EN = """<html lang="en"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": 24, "currentPage": 1, "_nextI18Next": {"initialI18nStore": {"en": {"translations": {"lot_status_starting_bid": "Starting bid", "lot_status_current_bid": "Current bid", "lot_status_final_bid": "Final bid"}}}}, "categoryLots": {"lots": [{"id": 106506005, "title": "Cartier - Tank Must de Cartier PM - No reserve price - 5057001 - Unisex - 1990-1999 ", "subtitle": "Quartz - Gold-plated, Silver", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/13/8/9/4/thumb2_89445a08-8c49-46b9-ab5b-d58af7b204d9.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/13/8/9/4/89445a08-8c49-46b9-ab5b-d58af7b204d9.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106506005-cartier-tank-must-de-cartier-pm-no-reserve-price-5057001-unisex-1990-1999", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1264941, "pubnubChannel": "CWAUCTION-production-1264941", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106583855, "title": "Omega - De Ville Prestige Co-Axial \\"Orbis Edition\\" - 424.13.40.20.03.003 - Men - 2010-2020 ", "subtitle": "Automatic - Stainless steel", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/7/c/d/7/thumb2_cd7e70f9-1b50-4287-872b-426c1895538e.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/7/c/d/7/cd7e70f9-1b50-4287-872b-426c1895538e.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106583855-omega-de-ville-prestige-co-axial-orbis-edition-424-13-40-20-03-003-men-2010-2020", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1263376, "pubnubChannel": "CWAUCTION-production-1263376", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-03T16:00:00+00:00", "bidding_start_time": "2026-09-03T16:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106468216, "title": "Seiko - Chronograph - No reserve price - 7T32-6L70 - Men - 2010-2020 ", "subtitle": "Quartz - Stainless steel", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/30/3/3/f/thumb2_33f46f83-dd10-4b0f-8cf6-09e82cc4cd9c.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/30/3/3/f/33f46f83-dd10-4b0f-8cf6-09e82cc4cd9c.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106468216-seiko-chronograph-no-reserve-price-7t32-6l70-men-2010-2020", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1265196, "pubnubChannel": "CWAUCTION-production-1265196", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}], "total": 11681, "meta": {"extended_search_result": false}}}}, "locale": "en"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106506005-cartier-tank-must-de-cartier-pm-no-reserve-price-5057001-unisex-1990-1999"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Cartier - Tank Must de Cartier PM - No reserve price - 5057001 - Unisex - 1990-1999 </p><p class="c-lot-card__status-text">Current bid</p><p class="c-lot-card__price">€1,535</p><div class="c-lot-card__timer"><div><time>1 min left</time><span><strong>+90s</strong></span></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>144</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106583855-omega-de-ville-prestige-co-axial-orbis-edition-424-13-40-20-03-003-men-2010-2020"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Omega - De Ville Prestige Co-Axial "Orbis Edition" - 424.13.40.20.03.003 - Men - 2010-2020 </p><p class="c-lot-card__status-text">​</p><p class="c-lot-card__price">​</p><div class="c-lot-card__timer"><div>Closed for bidding</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>45</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106468216-seiko-chronograph-no-reserve-price-7t32-6l70-men-2010-2020"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Seiko - Chronograph - No reserve price - 7T32-6L70 - Men - 2010-2020 </p><p class="c-lot-card__status-text">Final bid</p><p class="c-lot-card__price">€75</p><div class="c-lot-card__timer"><div>Closed for bidding</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>6</span></button></div></article></body></html>"""
+FIXTURES_PATH = os.path.join(REPO_ROOT, "fixtures_generated.json")
+with open(FIXTURES_PATH, encoding="utf-8") as _f:
+    FIX = json.load(_f)
 
-LISTING_DE = """<html lang="de"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": 24, "currentPage": 1, "_nextI18Next": {"initialI18nStore": {"de": {"translations": {"lot_status_starting_bid": "Startpreis ", "lot_status_current_bid": "Aktuelles Gebot", "lot_status_final_bid": "Endgebot"}}}}, "categoryLots": {"lots": [{"id": 106582114, "title": "Omega - De Ville - Ohne mindestpreis - 1450 - Damen - 1990-1999 ", "subtitle": "Quarz - Edelstahl", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/9/3/0/9/3/thumb2_09308ca7-3291-4647-a197-49308aae5222.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/9/3/0/9/3/09308ca7-3291-4647-a197-49308aae5222.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/de/l/106582114-omega-de-ville-ohne-mindestpreis-1450-damen-1990-1999", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1263430, "pubnubChannel": "CWAUCTION-production-1263430", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": {"price_eur": 771}, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106605067, "title": "Seiko - Quartz Day-Date  Black Dial - Ohne mindestpreis - 7N43-0BR0 - Herren - 2010–2020 ", "subtitle": "Quarz - Edelstahl", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/2/9/8/e/thumb2_98ec9fd4-8b3a-4116-9157-95c46de465bb.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/2/9/8/e/98ec9fd4-8b3a-4116-9157-95c46de465bb.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/de/l/106605067-seiko-quartz-day-date-black-dial-ohne-mindestpreis-7n43-0br0-herren-2010-2020", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1265196, "pubnubChannel": "CWAUCTION-production-1265196", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106566224, "title": "Citizen - Citizen - Citizen Promaster Aqualand JP2007-17X - Ohne mindestpreis - JP2007-17X - Herren - 2026", "subtitle": "Quarz - Stahl", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/24/4/c/0/thumb2_4c04f0ed-18fd-4342-9ba3-5ca8c13a4f33.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/24/4/c/0/4c04f0ed-18fd-4342-9ba3-5ca8c13a4f33.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/de/l/106566224-citizen-citizen-citizen-promaster-aqualand-jp2007-17x-ohne-mindestpreis-jp2007-17x-herren-2026", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1264557, "pubnubChannel": "CWAUCTION-production-1264557", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-03T16:00:00+00:00", "bidding_start_time": "2026-09-03T16:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}], "total": 11681, "meta": {"extended_search_result": false}}}}, "locale": "de"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/de/l/106582114-omega-de-ville-ohne-mindestpreis-1450-damen-1990-1999"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Omega - De Ville - Ohne mindestpreis - 1450 - Damen - 1990-1999 </p><p class="c-lot-card__status-text">Aktuelles Gebot</p><p class="c-lot-card__price">150 €</p><div class="c-lot-card__timer"><div><time>Noch 1 Sekunde</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>24</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/de/l/106605067-seiko-quartz-day-date-black-dial-ohne-mindestpreis-7n43-0br0-herren-2010-2020"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Seiko - Quartz Day-Date  Black Dial - Ohne mindestpreis - 7N43-0BR0 - Herren - 2010–2020 </p><p class="c-lot-card__status-text">Endgebot</p><p class="c-lot-card__price">35 €</p><div class="c-lot-card__timer"><div>Beendet</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>14</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/de/l/106566224-citizen-citizen-citizen-promaster-aqualand-jp2007-17x-ohne-mindestpreis-jp2007-17x-herren-2026"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Citizen - Citizen - Citizen Promaster Aqualand JP2007-17X - Ohne mindestpreis - JP2007-17X - Herren - 2026</p><p class="c-lot-card__status-text">Endgebot</p><p class="c-lot-card__price">315 €</p><div class="c-lot-card__timer"><div>Beendet</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>50</span></button></div></article></body></html>"""
 
-LISTING_NL = """<html lang="nl"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": 24, "currentPage": 1, "_nextI18Next": {"initialI18nStore": {"nl": {"translations": {"lot_status_starting_bid": "Openingsbod", "lot_status_current_bid": "Huidig bod", "lot_status_final_bid": "Eindbod"}}}}, "categoryLots": {"lots": [{"id": 106582114, "title": "Omega - De Ville - Zonder minimumprijs - 1450 - Dames - 1990-1999 ", "subtitle": "Quartz - Roestvrij staal", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/9/3/0/9/3/thumb2_09308ca7-3291-4647-a197-49308aae5222.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/9/3/0/9/3/09308ca7-3291-4647-a197-49308aae5222.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/nl/l/106582114-omega-de-ville-zonder-minimumprijs-1450-dames-1990-1999", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1263430, "pubnubChannel": "CWAUCTION-production-1263430", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": {"price_eur": 771}, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106605067, "title": "Seiko - Quartz Day-Date  Black Dial - Zonder minimumprijs - 7N43-0BR0 - Heren - 2010-2020 ", "subtitle": "Quartz - Roestvrij staal", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/2/9/8/e/thumb2_98ec9fd4-8b3a-4116-9157-95c46de465bb.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/2/9/8/e/98ec9fd4-8b3a-4116-9157-95c46de465bb.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/nl/l/106605067-seiko-quartz-day-date-black-dial-zonder-minimumprijs-7n43-0br0-heren-2010-2020", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1265196, "pubnubChannel": "CWAUCTION-production-1265196", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106566224, "title": "Citizen - Citizen - Citizen Promaster Aqualand JP2007-17X - Zonder minimumprijs - JP2007-17X - Heren - 2026", "subtitle": "Quartz - Staal", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/24/4/c/0/thumb2_4c04f0ed-18fd-4342-9ba3-5ca8c13a4f33.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/24/4/c/0/4c04f0ed-18fd-4342-9ba3-5ca8c13a4f33.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/nl/l/106566224-citizen-citizen-citizen-promaster-aqualand-jp2007-17x-zonder-minimumprijs-jp2007-17x-heren-2026", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1264557, "pubnubChannel": "CWAUCTION-production-1264557", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-03T16:00:00+00:00", "bidding_start_time": "2026-09-03T16:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}], "total": 11681, "meta": {"extended_search_result": false}}}}, "locale": "nl"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/nl/l/106582114-omega-de-ville-zonder-minimumprijs-1450-dames-1990-1999"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Omega - De Ville - Zonder minimumprijs - 1450 - Dames - 1990-1999 </p><p class="c-lot-card__status-text">Huidig bod</p><p class="c-lot-card__price">€ 150</p><div class="c-lot-card__timer"><div><time>Nog 2 seconden</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>24</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/nl/l/106605067-seiko-quartz-day-date-black-dial-zonder-minimumprijs-7n43-0br0-heren-2010-2020"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Seiko - Quartz Day-Date  Black Dial - Zonder minimumprijs - 7N43-0BR0 - Heren - 2010-2020 </p><p class="c-lot-card__status-text">Huidig bod</p><p class="c-lot-card__price">€ 35</p><div class="c-lot-card__timer"><div><time>Nog 4 seconden</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>14</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/nl/l/106566224-citizen-citizen-citizen-promaster-aqualand-jp2007-17x-zonder-minimumprijs-jp2007-17x-heren-2026"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Citizen - Citizen - Citizen Promaster Aqualand JP2007-17X - Zonder minimumprijs - JP2007-17X - Heren - 2026</p><p class="c-lot-card__status-text">Huidig bod</p><p class="c-lot-card__price">€ 315</p><div class="c-lot-card__timer"><div><time>Nog 4 seconden</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>50</span></button></div></article></body></html>"""
+def fx(name):
+    """One fixture's (html, url, status)."""
+    f = FIX[name]
+    return f["html"], f["url"], f["status"]
 
-LISTING_PL = """<html lang="pl"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": 24, "currentPage": 1, "_nextI18Next": {"initialI18nStore": {"pl": {"translations": {"lot_status_starting_bid": "Cena wywoławcza", "lot_status_current_bid": "Aktualna oferta", "lot_status_final_bid": "Ostateczna oferta"}}}}, "categoryLots": {"lots": [{"id": 106605067, "title": "Seiko - Quartz Day-Date  Black Dial - Bez ceny minimalnej\\r\\n - 7N43-0BR0 - Mężczyzna - 2010-2020 ", "subtitle": "kwarcowy - Stal nierdzewna", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/2/9/8/e/thumb2_98ec9fd4-8b3a-4116-9157-95c46de465bb.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/2/9/8/e/98ec9fd4-8b3a-4116-9157-95c46de465bb.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/pl/l/106605067-seiko-quartz-day-date-black-dial-bez-ceny-minimalnej-7n43-0br0-mezczyzna-2010-2020", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1265196, "pubnubChannel": "CWAUCTION-production-1265196", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106566224, "title": "Citizen - Citizen - Citizen Promaster Aqualand JP2007-17X - Bez ceny minimalnej\\r\\n - JP2007-17X - Mężczyzna - 2026", "subtitle": "kwarcowy - Stal", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/24/4/c/0/thumb2_4c04f0ed-18fd-4342-9ba3-5ca8c13a4f33.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/24/4/c/0/4c04f0ed-18fd-4342-9ba3-5ca8c13a4f33.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/pl/l/106566224-citizen-citizen-citizen-promaster-aqualand-jp2007-17x-bez-ceny-minimalnej-jp2007-17x-mezczyzna-2026", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1264557, "pubnubChannel": "CWAUCTION-production-1264557", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-03T16:00:00+00:00", "bidding_start_time": "2026-09-03T16:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106535661, "title": "Franck Muller - Casablanca Cintrée Curvex Chronograph Cherry - 6850 CC AT - Mężczyzna - 1990-1999 ", "subtitle": "Automatyczna - Białe złoto", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/19/3/a/5/thumb2_3a5219a4-4e93-4ce3-b666-bd38740a2ae8.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/19/3/a/5/3a5219a4-4e93-4ce3-b666-bd38740a2ae8.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/pl/l/106535661-franck-muller-casablanca-cintree-curvex-chronograph-cherry-6850-cc-at-mezczyzna-1990-1999", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1262955, "pubnubChannel": "CWAUCTION-production-1262955", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-03T10:00:00+00:00", "bidding_start_time": "2026-09-03T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}], "total": 11681, "meta": {"extended_search_result": false}}}}, "locale": "pl"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/pl/l/106605067-seiko-quartz-day-date-black-dial-bez-ceny-minimalnej-7n43-0br0-mezczyzna-2010-2020"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Seiko - Quartz Day-Date  Black Dial - Bez ceny minimalnej
- - 7N43-0BR0 - Mężczyzna - 2010-2020 </p><p class="c-lot-card__status-text">Ostateczna oferta</p><p class="c-lot-card__price">€ 35</p><div class="c-lot-card__timer"><div>Licytacja zakończona</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>14</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/pl/l/106566224-citizen-citizen-citizen-promaster-aqualand-jp2007-17x-bez-ceny-minimalnej-jp2007-17x-mezczyzna-2026"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Citizen - Citizen - Citizen Promaster Aqualand JP2007-17X - Bez ceny minimalnej
- - JP2007-17X - Mężczyzna - 2026</p><p class="c-lot-card__status-text">Ostateczna oferta</p><p class="c-lot-card__price">€ 315</p><div class="c-lot-card__timer"><div>Licytacja zakończona</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>50</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/pl/l/106535661-franck-muller-casablanca-cintree-curvex-chronograph-cherry-6850-cc-at-mezczyzna-1990-1999"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Franck Muller - Casablanca Cintrée Curvex Chronograph Cherry - 6850 CC AT - Mężczyzna - 1990-1999 </p><p class="c-lot-card__status-text">​</p><p class="c-lot-card__price">​</p><div class="c-lot-card__timer"><div>Licytacja zakończona</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>37</span></button></div></article></body></html>"""
 
-LISTING_ZH = """<html lang="zh-Hant"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": 24, "currentPage": 1, "_nextI18Next": {"initialI18nStore": {"zh-Hant": {"translations": {"lot_status_starting_bid": "開拍價", "lot_status_current_bid": "現時出價", "lot_status_final_bid": "最終出價"}}}}, "categoryLots": {"lots": [{"id": 106573097, "title": "Seiko - ALBA AQPK411 - 沒有保留價 - Seiko ALBA VJ21-KNF0 Quartz Blue Dial Men's Watch - Made in Japan - 男士 - 2010-2020 ", "subtitle": "石英表 - 不銹鋼", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/23/8/0/6/thumb2_80636e8b-1619-442c-96a9-4cf2a4693fac.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/23/8/0/6/80636e8b-1619-442c-96a9-4cf2a4693fac.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/zh-Hant/l/106573097-seiko-alba-aqpk411-seiko-alba-vj21-knf0-quartz-blue-dial-men-s-watch-made-in-japan-2010-2020", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1265195, "pubnubChannel": "CWAUCTION-production-1265195", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-03T16:00:00+00:00", "bidding_start_time": "2026-09-03T16:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106535661, "title": "Franck Muller - Casablanca Cintrée Curvex Chronograph Cherry - 6850 CC AT - 男士 - 1990-1999 ", "subtitle": "全自動 - 白金", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/19/3/a/5/thumb2_3a5219a4-4e93-4ce3-b666-bd38740a2ae8.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/19/3/a/5/3a5219a4-4e93-4ce3-b666-bd38740a2ae8.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/zh-Hant/l/106535661-franck-muller-casablanca-cintree-curvex-chronograph-cherry-6850-cc-at-1990-1999", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1262955, "pubnubChannel": "CWAUCTION-production-1262955", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-03T10:00:00+00:00", "bidding_start_time": "2026-09-03T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106571580, "title": "Omega - De Ville - Prestige - Co-Axial - Orbis Edition - Automatic - Date - 424.13.40.20.03.003 - 男士 - 2010-2020 ", "subtitle": "全自動 - 鋼", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/5/28/3/7/a/thumb2_37a876be-18c7-40bd-acd7-2d91d036fb7b.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/5/28/3/7/a/37a876be-18c7-40bd-acd7-2d91d036fb7b.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/zh-Hant/l/106571580-omega-de-ville-prestige-co-axial-orbis-edition-automatic-date-424-13-40-20-03-003-2010-2020", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1263376, "pubnubChannel": "CWAUCTION-production-1263376", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-03T16:00:00+00:00", "bidding_start_time": "2026-09-03T16:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}], "total": 11675, "meta": {"extended_search_result": false}}}}, "locale": "zh-Hant"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/zh-Hant/l/106573097-seiko-alba-aqpk411-seiko-alba-vj21-knf0-quartz-blue-dial-men-s-watch-made-in-japan-2010-2020"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Seiko - ALBA AQPK411 - 沒有保留價 - Seiko ALBA VJ21-KNF0 Quartz Blue Dial Men's Watch - Made in Japan - 男士 - 2010-2020 </p><p class="c-lot-card__status-text">現時出價</p><p class="c-lot-card__price">€27</p><div class="c-lot-card__timer"><div><time>剩餘2秒</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>2</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/zh-Hant/l/106535661-franck-muller-casablanca-cintree-curvex-chronograph-cherry-6850-cc-at-1990-1999"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Franck Muller - Casablanca Cintrée Curvex Chronograph Cherry - 6850 CC AT - 男士 - 1990-1999 </p><p class="c-lot-card__status-text">​</p><p class="c-lot-card__price">​</p><div class="c-lot-card__timer"><div>競投結束</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>37</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/zh-Hant/l/106571580-omega-de-ville-prestige-co-axial-orbis-edition-automatic-date-424-13-40-20-03-003-2010-2020"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Omega - De Ville - Prestige - Co-Axial - Orbis Edition - Automatic - Date - 424.13.40.20.03.003 - 男士 - 2010-2020 </p><p class="c-lot-card__status-text">現時出價</p><p class="c-lot-card__price">€1,400</p><div class="c-lot-card__timer"><div><time>剩餘4秒</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>33</span></button></div></article></body></html>"""
+def fx_rows(name):
+    html, url, _ = fx(name)
+    return parse_products(html, url, page=page_number_from_url(url))
 
-LISTING_JA = """<html lang="ja"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": 24, "currentPage": 1, "_nextI18Next": {"initialI18nStore": {"ja": {"translations": {}}, "en": {"translations": {"lot_status_starting_bid": "Starting bid", "lot_status_current_bid": "Current bid", "lot_status_final_bid": "Final bid"}}}}, "categoryLots": {"lots": [{"id": 106535661, "title": "Franck Muller - Casablanca Cintrée Curvex Chronograph Cherry - 6850 CC AT - Men - 1990-1999 ", "subtitle": "Automatic - White gold", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/19/3/a/5/thumb2_3a5219a4-4e93-4ce3-b666-bd38740a2ae8.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/19/3/a/5/3a5219a4-4e93-4ce3-b666-bd38740a2ae8.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/ja/l/106535661-franck-muller-casablanca-cintree-curvex-chronograph-cherry-6850-cc-at-men-1990-1999", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1262955, "pubnubChannel": "CWAUCTION-production-1262955", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-03T10:00:00+00:00", "bidding_start_time": "2026-09-03T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106605067, "title": "Seiko - Quartz Day-Date  Black Dial - No reserve price - 7N43-0BR0 - Men - 2010-2020 ", "subtitle": "Quartz - Stainless steel", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/7/2/9/8/e/thumb2_98ec9fd4-8b3a-4116-9157-95c46de465bb.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/7/2/9/8/e/98ec9fd4-8b3a-4116-9157-95c46de465bb.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/ja/l/106605067-seiko-quartz-day-date-black-dial-no-reserve-price-7n43-0br0-men-2010-2020", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1265196, "pubnubChannel": "CWAUCTION-production-1265196", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106566224, "title": "Citizen - Citizen - Citizen Promaster Aqualand JP2007-17X - No reserve price - JP2007-17X - Men - 2026", "subtitle": "Quartz - Steel", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/24/4/c/0/thumb2_4c04f0ed-18fd-4342-9ba3-5ca8c13a4f33.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/24/4/c/0/4c04f0ed-18fd-4342-9ba3-5ca8c13a4f33.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/ja/l/106566224-citizen-citizen-citizen-promaster-aqualand-jp2007-17x-no-reserve-price-jp2007-17x-men-2026", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1264557, "pubnubChannel": "CWAUCTION-production-1264557", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-03T16:00:00+00:00", "bidding_start_time": "2026-09-03T16:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "live": null}], "total": 11675, "meta": {"extended_search_result": false}}}}, "locale": "ja"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/ja/l/106535661-franck-muller-casablanca-cintree-curvex-chronograph-cherry-6850-cc-at-men-1990-1999"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Franck Muller - Casablanca Cintrée Curvex Chronograph Cherry - 6850 CC AT - Men - 1990-1999 </p><p class="c-lot-card__status-text">​</p><p class="c-lot-card__price">​</p><div class="c-lot-card__timer"><div>Closed for bidding</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>37</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/ja/l/106605067-seiko-quartz-day-date-black-dial-no-reserve-price-7n43-0br0-men-2010-2020"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Seiko - Quartz Day-Date  Black Dial - No reserve price - 7N43-0BR0 - Men - 2010-2020 </p><p class="c-lot-card__status-text">Final bid</p><p class="c-lot-card__price">€35</p><div class="c-lot-card__timer"><div>Closed for bidding</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>14</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/ja/l/106566224-citizen-citizen-citizen-promaster-aqualand-jp2007-17x-no-reserve-price-jp2007-17x-men-2026"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Citizen - Citizen - Citizen Promaster Aqualand JP2007-17X - No reserve price - JP2007-17X - Men - 2026</p><p class="c-lot-card__status-text">Final bid</p><p class="c-lot-card__price">€315</p><div class="c-lot-card__timer"><div>Closed for bidding</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>50</span></button></div></article></body></html>"""
 
-SEARCH_EN = """<html lang="en"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": 24, "currentPage": 1, "_nextI18Next": {"initialI18nStore": {"en": {"translations": {"lot_status_starting_bid": "Starting bid", "lot_status_current_bid": "Current bid", "lot_status_final_bid": "Final bid"}}}}, "searchLots": {"lots": [{"id": 106667597, "title": "Rolex - Datejust - Serviced by Rolex - 1603 - Men - 1972", "subtitle": "Automatic - Steel", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/9/7/f/4/6/thumb2_f46a7028-4dc0-488a-ba53-33e893cf09fe.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/9/7/f/4/6/f46a7028-4dc0-488a-ba53-33e893cf09fe.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106667597-rolex-datejust-serviced-by-rolex-1603-men-1972", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1263166, "pubnubChannel": "CWAUCTION-production-1263166", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-08T12:00:00+00:00", "bidding_start_time": "2026-09-08T12:00:00+00:00", "buyNow": null, "hasFreeShipping": null, "isVectorSearchResult": false, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106652319, "title": "Rolex - Oyster Perpetual - 126000 - Unisex - 2026", "subtitle": "Automatic - Stainless steel", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/9/6/9/9/1/thumb2_991abf4a-772c-410d-b965-c8399e3f53ca.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/9/6/9/9/1/991abf4a-772c-410d-b965-c8399e3f53ca.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106652319-rolex-oyster-perpetual-126000-unisex-2026", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1263104, "pubnubChannel": "CWAUCTION-production-1263104", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-07T12:00:00+00:00", "bidding_start_time": "2026-09-07T12:00:00+00:00", "buyNow": null, "hasFreeShipping": null, "isVectorSearchResult": false, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106597095, "title": "Rolex - Oyster Perpetual - 6085 - Men - 1953", "subtitle": "Automatic - Stainless steel", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/9/3/c/f/1/thumb2_cf15fb79-88fe-4268-a928-43e953b77ef8.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/9/3/c/f/1/cf15fb79-88fe-4268-a928-43e953b77ef8.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106597095-rolex-oyster-perpetual-6085-men-1953", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1263146, "pubnubChannel": "CWAUCTION-production-1263146", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-07T10:00:00+00:00", "bidding_start_time": "2026-09-07T10:00:00+00:00", "buyNow": null, "hasFreeShipping": null, "isVectorSearchResult": false, "description": null, "sellerId": null, "sellerShopName": null, "live": null}], "total": 681, "meta": {"extended_search_result": false}}}}, "locale": "en"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106667597-rolex-datejust-serviced-by-rolex-1603-men-1972?po=search&amp;poq=rolex"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Rolex - Datejust - Serviced by Rolex - 1603 - Men - 1972</p><p class="c-lot-card__status-text">Current bid</p><p class="c-lot-card__price">€4,200</p><div class="c-lot-card__timer"><div><time>2 days left</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>20</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106652319-rolex-oyster-perpetual-126000-unisex-2026?po=search&amp;poq=rolex"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Rolex - Oyster Perpetual - 126000 - Unisex - 2026</p><p class="c-lot-card__status-text">Current bid</p><p class="c-lot-card__price">€12,500</p><div class="c-lot-card__timer"><div><time>20 hours left</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>57</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106597095-rolex-oyster-perpetual-6085-men-1953?po=search&amp;poq=rolex"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Rolex - Oyster Perpetual - 6085 - Men - 1953</p><p class="c-lot-card__status-text">Current bid</p><p class="c-lot-card__price">€1,950</p><div class="c-lot-card__timer"><div><time>1 day left</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>18</span></button></div></article></body></html>"""
+# The exact tags the 2Captcha Scraping Browser's auto-solve extension injects
+# into every page it loads, copied from a CDP capture of a page the site
+# plainly served. Kept verbatim because the question they answer is whether
+# our own marker set mistakes them for the site's challenge — and unlike two
+# sibling repos, this marker set CAN match one, so the guard is not dead code.
+EXTENSION_TAGS = (
+    '<script src="chrome-extension://kjmkgkdkpedkejedfhmfcenooemhbpbo/'
+    'content/captcha/recaptcha/hunter.js"></script>'
+    '<script src="chrome-extension://kjmkgkdkpedkejedfhmfcenooemhbpbo/'
+    'content/captcha/turnstile/hunter.js" '
+    'data-ts-input="cf-turnstile-response"></script>'
+)
 
-SEARCH_NO_RESULTS = """<html lang="en"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": 24, "currentPage": 1, "_nextI18Next": {"initialI18nStore": {"en": {"translations": {"lot_status_starting_bid": "Starting bid", "lot_status_current_bid": "Current bid", "lot_status_final_bid": "Final bid"}}}}, "searchLots": {"lots": [{"id": 106350649, "title": "Cartier - Bi-fold wallet", "subtitle": "Bordeaux - Leather, Gold-plated metal", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/26/d/5/b/thumb2_d5b17d39-bb41-41d9-890b-d566d654ba9c.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/26/d/5/b/d5b17d39-bb41-41d9-890b-d566d654ba9c.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106350649-cartier-bi-fold-wallet", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1261971, "pubnubChannel": "CWAUCTION-production-1261971", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": false, "biddingStartTime": "2026-09-04T10:00:00+00:00", "bidding_start_time": "2026-09-04T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": true, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106659405, "title": "LEGO Minifigure - sw0131 - Star Wars - Star Wars", "subtitle": "Used - unboxed - Tested and working", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/9/6/c/4/0/thumb2_c400d9e4-58b8-4b8b-9c60-d8a6e656169d.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/9/6/c/4/0/c400d9e4-58b8-4b8b-9c60-d8a6e656169d.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106659405-lego-minifigure-sw0131-star-wars-star-wars", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1256217, "pubnubChannel": "CWAUCTION-production-1256217", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-09T12:00:00+00:00", "bidding_start_time": "2026-09-09T12:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": true, "description": null, "sellerId": null, "sellerShopName": null, "live": null}, {"id": 106441181, "title": "Star Wars - Master Yoda - jakks pacific - big fig - 50cm - mint condition - Jakks Pacific", "subtitle": "Mint", "thumbImageUrl": "https://assets.catawiki.nl/assets/2024/9/6/b/c/b/thumb2_bcbabbe7-9536-4ffa-b738-6e20572960a8.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2024/9/6/b/c/b/bcbabbe7-9536-4ffa-b738-6e20572960a8.jpg", "favoriteCount": 0, "url": "https://www.catawiki.com/en/l/106441181-star-wars-master-yoda-jakks-pacific-big-fig-50cm-mint-condition-jakks-pacific", "localized": true, "translatedTitle": null, "translatedSubtitle": null, "auctionId": 1251559, "pubnubChannel": "CWAUCTION-production-1251559", "useRealtimeMessageFallback": false, "use_realtime_message_fallback": false, "isContentExplicit": false, "reservePriceSet": true, "biddingStartTime": "2026-09-07T10:00:00+00:00", "bidding_start_time": "2026-09-07T10:00:00+00:00", "buyNow": null, "hasFreeShipping": false, "isVectorSearchResult": true, "description": null, "sellerId": null, "sellerShopName": null, "live": null}], "total": 24, "meta": {"extended_search_result": true}}}}, "locale": "en"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106350649-cartier-bi-fold-wallet?po=search&amp;poq=zzzqxwv-nothing-here"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Cartier - Bi-fold wallet</p><p class="c-lot-card__status-text">Current bid</p><p class="c-lot-card__price">€11</p><div class="c-lot-card__timer"><div><time>3 days left</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>22</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106659405-lego-minifigure-sw0131-star-wars-star-wars?po=search&amp;poq=zzzqxwv-nothing-here"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">LEGO Minifigure - sw0131 - Star Wars - Star Wars</p><p class="c-lot-card__status-text">Current bid</p><p class="c-lot-card__price">€28</p><div class="c-lot-card__timer"><div><time>7 days left</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>6</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106441181-star-wars-master-yoda-jakks-pacific-big-fig-50cm-mint-condition-jakks-pacific?po=search&amp;poq=zzzqxwv-nothing-here"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Star Wars - Master Yoda - jakks pacific - big fig - 50cm - mint condition - Jakks Pacific</p><p class="c-lot-card__status-text">Current bid</p><p class="c-lot-card__price">€155</p><div class="c-lot-card__timer"><div><time>3 days left</time></div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>19</span></button></div></article></body></html>"""
-
-AUCTION_EN = """<html lang="en"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotsPerPage": null, "currentPage": null, "_nextI18Next": {"initialI18nStore": {"en": {"translations": {"lot_status_starting_bid": "Starting bid", "lot_status_current_bid": "Current bid", "lot_status_final_bid": "Final bid"}}}}, "lots": [{"id": 106411829, "title": "Statuette, Petit Prince - 22 cm - Bronze", "subtitle": "France", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/27/3/9/1/thumb2_391c779f-ea3a-4c42-8c9e-fb7c698dfb1a.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/27/3/9/1/391c779f-ea3a-4c42-8c9e-fb7c698dfb1a.jpg", "url": "https://www.catawiki.com/en/l/106411829-statuette-petit-prince-22-cm-bronze", "pubnubChannel": "CWAUCTION-production-1243988", "useRealtimeMessageFallback": false, "reservePriceSet": true, "auctionId": 1243988, "isContentExplicit": false, "favoriteCount": 0, "biddingStartTime": null, "bidding_start_time": null, "localized": null, "translatedTitle": null, "translatedSubtitle": null, "hasFreeShipping": null, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "buyNow": null, "live": null}, {"id": 106567427, "title": "Sculpture, Naar Johan Coenraad Altorf – Art Deco bronzen uil – Coenrad – JB Déposée Bronze Garanti Paris – - 32.7 cm - Bronze, Marble", "subtitle": "Europe", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/8/27/d/5/b/thumb2_d5b9df98-b1f6-475d-bae7-312ba96b97d0.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/8/27/d/5/b/d5b9df98-b1f6-475d-bae7-312ba96b97d0.jpg", "url": "https://www.catawiki.com/en/l/106567427-sculpture-naar-johan-coenraad-altorf-art-deco-bronzen-uil-coenrad-jb-deposee-bronze-garanti-paris-32-7-cm-bronze-marble", "pubnubChannel": "CWAUCTION-production-1243988", "useRealtimeMessageFallback": false, "reservePriceSet": true, "auctionId": 1243988, "isContentExplicit": false, "favoriteCount": 0, "biddingStartTime": null, "bidding_start_time": null, "localized": null, "translatedTitle": null, "translatedSubtitle": null, "hasFreeShipping": null, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "buyNow": null, "live": null}, {"id": 106541729, "title": "Statue, Paardenhoofd 43 cm - 43 cm - Resin", "subtitle": "Europe", "thumbImageUrl": "https://assets.catawiki.nl/assets/2026/5/7/4/4/3/thumb2_4433aa26-b58a-43a9-b359-7d2d87bcecf2.jpg", "originalImageUrl": "https://assets.catawiki.nl/assets/2026/5/7/4/4/3/4433aa26-b58a-43a9-b359-7d2d87bcecf2.jpg", "url": "https://www.catawiki.com/en/l/106541729-statue-paardenhoofd-43-cm-43-cm-resin", "pubnubChannel": "CWAUCTION-production-1243988", "useRealtimeMessageFallback": false, "reservePriceSet": true, "auctionId": 1243988, "isContentExplicit": false, "favoriteCount": 0, "biddingStartTime": null, "bidding_start_time": null, "localized": null, "translatedTitle": null, "translatedSubtitle": null, "hasFreeShipping": null, "isVectorSearchResult": null, "description": null, "sellerId": null, "sellerShopName": null, "buyNow": null, "live": null}], "auction": {"id": 1243988, "title": "Figures & Figurines Auction", "status": "closed", "startAt": "2026-09-04T10:00:00Z", "closeAt": "2026-09-10T18:00:00Z", "numberOfLots": 130}}}, "locale": "en"}</script><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106541729-statue-paardenhoofd-43-cm-43-cm-resin"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Statue, Paardenhoofd 43 cm - 43 cm - Resin</p><p class="c-lot-card__status-text">​</p><p class="c-lot-card__price">​</p><div class="c-lot-card__timer"><div>Closed for bidding</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>3</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106411829-statuette-petit-prince-22-cm-bronze"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Statuette, Petit Prince - 22 cm - Bronze</p><p class="c-lot-card__status-text">Final bid</p><p class="c-lot-card__price">€225</p><div class="c-lot-card__timer"><div>Closed for bidding</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>9</span></button></div></article><article class="c-lot-card__container"><a class="c-lot-card" href="https://www.catawiki.com/en/l/106567427-sculpture-naar-johan-coenraad-altorf-art-deco-bronzen-uil-coenrad-jb-deposee-bronze-garanti-paris-32-7-cm-bronze-marble"><div class="c-lot-card__image"><img class="c-lot-card__image-element" src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><div class="c-lot-card__image-bottom-left"></div></div><div class="c-lot-card__content"><p class="c-lot-card__title">Sculpture, Naar Johan Coenraad Altorf – Art Deco bronzen uil – Coenrad – JB Déposée Bronze Garanti Paris – - 32.7 cm - Bronze, Marble</p><p class="c-lot-card__status-text">Final bid</p><p class="c-lot-card__price">€140</p><div class="c-lot-card__timer"><div>Closed for bidding</div></div></div></a><div class="c-lot-card__top-left"><button><div><svg><defs><clippath><rect></rect></clippath></defs><g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g><g><path></path></g></g></svg></div><span>19</span></button></div></article></body></html>"""
-
-LOT_CLOSED = """<html lang="en"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotDetailsData": {"lotId": 106583855, "lotTitle": "Omega - De Ville Prestige Co-Axial \\"Orbis Edition\\" - 424.13.40.20.03.003 - Men - 2010-2020 ", "lotSubtitle": "Automatic - Stainless steel", "images": [{"title": "Omega - De Ville Prestige Co-Axial \\"Orbis Edition\\" - 424.13.40.20.03.003 - Men - 2010-2020 ", "id": "https://assets.catawiki.nl/assets/2026/7/7/c/d/7/cd7e70f9-1b50-4287-872b-426c1895538e.jpg", "large": "https://assets.catawiki.nl/assets/2026/7/7/c/d/7/cd7e70f9-1b50-4287-872b-426c1895538e.jpg", "medium": "https://assets.catawiki.nl/assets/2026/7/7/c/d/7/cd7e70f9-1b50-4287-872b-426c1895538e.jpg", "thumbnail": "https://assets.catawiki.nl/assets/2026/7/7/c/d/7/thumb5_cd7e70f9-1b50-4287-872b-426c1895538e.jpg", "w": 547, "h": 700}], "specifications": [{"collectionUrl": null, "specificationId": 909, "valueId": 60796, "name": "Brand", "value": "Omega", "url": "https://www.catawiki.com/en/c/333-watches?filters=909[]=60796"}, {"collectionUrl": null, "specificationId": 926, "valueId": 60038, "name": "Gender", "value": "Men", "url": "https://www.catawiki.com/en/c/333-watches?filters=926[]=60038"}, {"collectionUrl": null, "specificationId": 966, "valueId": null, "name": "Model", "value": "De Ville Prestige Co-Axial \\"Orbis Edition\\"", "url": null}, {"collectionUrl": null, "specificationId": 1364, "valueId": 165398, "name": "Band material", "value": "Leather", "url": "https://www.catawiki.com/en/c/333-watches?filters=1364[]=165398"}, {"collectionUrl": null, "specificationId": 992, "valueId": null, "name": "Reference number", "value": "424.13.40.20.03.003", "url": null}, {"collectionUrl": null, "specificationId": 1365, "valueId": 165402, "name": "Band length", "value": "Long (over 200 mm)", "url": "https://www.catawiki.com/en/c/333-watches?filters=1365[]=165402"}, {"collectionUrl": null, "specificationId": 1010, "valueId": null, "name": "Shipped insured", "value": "Yes", "url": null}, {"collectionUrl": null, "specificationId": 1366, "valueId": null, "name": "Repainted dial", "value": "No", "url": null}, {"collectionUrl": null, "specificationId": 996, "valueId": 154439, "name": "Period", "value": "2010-2020", "url": "https://www.catawiki.com/en/c/333-watches?filters=996[]=154439"}, {"collectionUrl": null, "specificationId": 998, "valueId": 61725, "name": "Movement", "value": "Automatic", "url": "https://www.catawiki.com/en/c/333-watches?filters=998[]=61725"}, {"collectionUrl": null, "specificationId": 913, "valueId": 61892, "name": "Dial colour", "value": "Blue", "url": "https://www.catawiki.com/en/c/333-watches?filters=913[]=61892"}, {"collectionUrl": null, "specificationId": 932, "valueId": 99821, "name": "Case material", "value": "Stainless steel", "url": "https://www.catawiki.com/en/c/333-watches?filters=932[]=99821"}, {"collectionUrl": null, "specificationId": 1367, "valueId": null, "name": "Original box included", "value": "No", "url": null}, {"collectionUrl": null, "specificationId": 1368, "valueId": null, "name": "Original papers included", "value": "No", "url": null}, {"collectionUrl": null, "specificationId": 1363, "valueId": 165384, "name": "Case diameter", "value": "40 mm", "url": "https://www.catawiki.com/en/c/333-watches?filters=1363[]=165384"}, {"collectionUrl": null, "specificationId": 1369, "valueId": null, "name": "Original warranty included", "value": "No", "url": null}, {"collectionUrl": null, "specificationId": 914, "valueId": 165438, "name": "Condition", "value": "Very good - minor signs of wear", "url": "https://www.catawiki.com/en/c/333-watches?filters=914[]=165438"}], "expertsEstimate": {"label": "Estimate", "min": {"USD": 0, "GBP": 0, "EUR": 2100}, "max": {"USD": 0, "GBP": 0, "EUR": 2400}, "type": "expert"}, "sellerInfo": {"id": 30124450, "url": "https://www.catawiki.com/en/u/30124450-galatawatch", "address": {"country": {"name": "Türkiye", "shortCode": "tr"}}, "score": {"score": 100, "positiveCount": 19, "negativeCount": 0, "neutralCount": 2, "lifetimeCount": 21}}, "favoriteCount": 44, "isClosed": true, "open": false, "category": {"id": 697, "url": "https://www.catawiki.com/en/c/697-omega-watches", "level": 2, "is_messaging_supported": false}, "buyNow": null}, "biddingBlockResponse": {"localizedCurrentBidAmount": 1300, "localizedMinBidAmount": 1400, "closed": true, "sold": false, "reservePriceMet": false, "biddingStartTime": 1788451200000, "biddingEndTime": 1789068236000, "biddingHistory": {"bids": [{"createdAt": "2026-09-10T17:35:39Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-09T19:58:15Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-09T19:58:08Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-09T09:40:57Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-09T07:04:46Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-07T23:46:06Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-07T20:45:37Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-07T17:53:09Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-07T13:00:16Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-06T05:19:03Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}]}, "highestBidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, "auction": {"id": 1263376, "title": "Omega Watches Auction", "status": "closing_now", "startAt": "2026-09-03T16:00:00Z", "closeAt": "2026-09-10T19:00:00Z", "numberOfLots": 42}}}}</script></body></html>"""
-
-LOT_LIVE = """<html lang="en"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><script id="__NEXT_DATA__" type="application/json">{"props": {"pageProps": {"lotDetailsData": {"lotId": 106506005, "lotTitle": "Cartier - Tank Must de Cartier PM - No reserve price - 5057001 - Unisex - 1990-1999 ", "lotSubtitle": "Quartz - Gold-plated, Silver", "images": [{"title": "Cartier - Tank Must de Cartier PM - No reserve price - 5057001 - Unisex - 1990-1999 ", "id": "https://assets.catawiki.nl/assets/2026/8/13/8/9/4/89445a08-8c49-46b9-ab5b-d58af7b204d9.jpg", "large": "https://assets.catawiki.nl/assets/2026/8/13/8/9/4/89445a08-8c49-46b9-ab5b-d58af7b204d9.jpg", "medium": "https://assets.catawiki.nl/assets/2026/8/13/8/9/4/89445a08-8c49-46b9-ab5b-d58af7b204d9.jpg", "thumbnail": "https://assets.catawiki.nl/assets/2026/8/13/8/9/4/thumb5_89445a08-8c49-46b9-ab5b-d58af7b204d9.jpg", "w": 700, "h": 526}], "specifications": [{"collectionUrl": null, "specificationId": 909, "valueId": 60226, "name": "Brand", "value": "Cartier", "url": "https://www.catawiki.com/en/c/333-watches?filters=909[]=60226"}, {"collectionUrl": null, "specificationId": 926, "valueId": 60041, "name": "Gender", "value": "Unisex", "url": "https://www.catawiki.com/en/c/333-watches?filters=926[]=60041"}, {"collectionUrl": null, "specificationId": 966, "valueId": null, "name": "Model", "value": "Tank Must de Cartier PM", "url": null}, {"collectionUrl": null, "specificationId": 1364, "valueId": 165398, "name": "Band material", "value": "Leather", "url": "https://www.catawiki.com/en/c/333-watches?filters=1364[]=165398"}, {"collectionUrl": null, "specificationId": 992, "valueId": null, "name": "Reference number", "value": "5057001", "url": null}, {"collectionUrl": null, "specificationId": 1365, "valueId": 165400, "name": "Band length", "value": "Short (160–180 mm)", "url": "https://www.catawiki.com/en/c/333-watches?filters=1365[]=165400"}, {"collectionUrl": null, "specificationId": 1010, "valueId": null, "name": "Shipped insured", "value": "Yes", "url": null}, {"collectionUrl": null, "specificationId": 1366, "valueId": null, "name": "Repainted dial", "value": "No", "url": null}, {"collectionUrl": null, "specificationId": 996, "valueId": 70506, "name": "Period", "value": "1990-1999", "url": "https://www.catawiki.com/en/c/333-watches?filters=996[]=70506"}, {"collectionUrl": null, "specificationId": 998, "valueId": 61727, "name": "Movement", "value": "Quartz", "url": "https://www.catawiki.com/en/c/333-watches?filters=998[]=61727"}, {"collectionUrl": null, "specificationId": 913, "valueId": 165409, "name": "Dial colour", "value": "Champagne", "url": "https://www.catawiki.com/en/c/333-watches?filters=913[]=165409"}, {"collectionUrl": null, "specificationId": 932, "valueId": 60012, "name": "Case material", "value": "Gold-plated, Silver", "url": "https://www.catawiki.com/en/c/333-watches?filters=932[]=60012"}, {"collectionUrl": null, "specificationId": 1367, "valueId": null, "name": "Original box included", "value": "No", "url": null}, {"collectionUrl": null, "specificationId": 1368, "valueId": null, "name": "Original papers included", "value": "No", "url": null}, {"collectionUrl": null, "specificationId": 1363, "valueId": 165357, "name": "Case diameter", "value": "20 mm", "url": "https://www.catawiki.com/en/c/333-watches?filters=1363[]=165357"}, {"collectionUrl": null, "specificationId": 1369, "valueId": null, "name": "Original warranty included", "value": "No", "url": null}, {"collectionUrl": null, "specificationId": 914, "valueId": 165438, "name": "Condition", "value": "Very good - minor signs of wear", "url": "https://www.catawiki.com/en/c/333-watches?filters=914[]=165438"}], "expertsEstimate": {"label": "Estimate", "min": {"USD": 0, "GBP": 0, "EUR": 2400}, "max": {"USD": 0, "GBP": 0, "EUR": 2700}, "type": "expert"}, "sellerInfo": {"id": 9740215, "url": "https://www.catawiki.com/en/u/9740215-user-6dc1249", "address": {"country": {"name": "France", "shortCode": "fr"}}, "score": {"score": 99.86, "positiveCount": 716, "negativeCount": 1, "neutralCount": 31, "lifetimeCount": 3622}}, "favoriteCount": 144, "isClosed": true, "open": false, "category": {"id": 855, "url": "https://www.catawiki.com/en/c/855-cartier-watches", "level": 2, "is_messaging_supported": false}, "buyNow": null}, "biddingBlockResponse": {"localizedCurrentBidAmount": 1635, "localizedMinBidAmount": 1735, "closed": true, "sold": true, "reservePriceMet": null, "biddingStartTime": 1788516000000, "biddingEndTime": 1789068434000, "biddingHistory": {"bids": [{"createdAt": "2026-09-10T19:25:41Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-10T19:24:11Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-10T13:58:58Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-10T13:51:45Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-08T08:48:51Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-05T15:58:47Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-05T12:40:05Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-05T12:39:55Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-05T12:39:55Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, {"createdAt": "2026-09-05T12:37:51Z", "bidderToken": "PLACEHOLDER-BIDDER-TOKEN"}]}, "highestBidderToken": "PLACEHOLDER-BIDDER-TOKEN"}, "auction": {"id": 1264941, "title": "Cartier Watches Auction • No Reserve", "status": "closing_now", "startAt": "2026-09-04T10:00:00Z", "closeAt": "2026-09-10T19:00:00Z", "numberOfLots": 43}}}}</script></body></html>"""
-
-AUCTIONS_INDEX = """<html lang="en"><body><img src="https://assets.catawiki.nl/assets/x/thumb2_x.jpg"/><link rel="preconnect" href="https://assets.catawiki.nl"><article data-sentry-component="AllAuctionsAuctionCard" data-sentry-source-file="AllAuctionsAuctionCard.tsx" data-testid="all-auctions-card"><article><a href="https://www.catawiki.com/en/a/1243988-figures-figurines-auction"><div><div><img/></div><div><div><img/></div><div><img/></div><div><img/><div><span>+127</span></div></div></div></div><div><p>Curated by PLACEHOLDER NAME</p><h6>Figures &amp; Figurines Auction</h6><div><div><h6>Ending now!</h6></div></div></div></a></article></article><article data-sentry-component="AllAuctionsAuctionCard" data-sentry-source-file="AllAuctionsAuctionCard.tsx" data-testid="all-auctions-card"><article><a href="https://www.catawiki.com/en/a/1249604-risque-art-photography-books-auction-japanese-erotica"><div><div>18+</div><div></div><div><div></div><div></div><div></div></div></div><div><p>Curated by PLACEHOLDER NAME</p><h6>Risqué Art &amp; Photography Books Auction (Japanese Erotica)</h6><div><div><h6>Ending now!</h6></div></div></div></a></article></article><article data-sentry-component="AllAuctionsAuctionCard" data-sentry-source-file="AllAuctionsAuctionCard.tsx" data-testid="all-auctions-card"><article><a href="https://www.catawiki.com/en/a/1249714-modern-contemporary-art-books-auction"><div><div><img/></div><div><div><img/></div><div><img/></div><div><img/><div><span>+120</span></div></div></div></div><div><p>Curated by PLACEHOLDER NAME</p><h6>Modern &amp; Contemporary Art Books Auction</h6><div><div><h6>Ending now!</h6></div></div></div></a></article></article></body></html>"""
-
-BLOCKED_403 = """<HTML><HEAD>
-<TITLE>Access Denied</TITLE>
-</HEAD><BODY>
-<H1>Access Denied</H1>
- 
-You don't have permission to access "http&#58;&#47;&#47;www&#46;catawiki&#46;com&#47;en&#47;c&#47;333&#45;watches" on this server.<P>
-Reference&#32;&#35;18&#46;1dff4817&#46;1789067250&#46;962670
-<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;1dff4817&#46;1789067250&#46;962670</P>
-</BODY>
-</HTML>
-"""
-
-# The privacy checks collect by the `_FIXTURE` suffix, so both spellings
-# exist on purpose: the short name reads better in an assertion, and the
-# suffixed one is what test_no_capture_leaks scans. A corpus check that
-# can silently scan nothing is worse than no corpus check at all.
-LISTING_EN_FIXTURE = LISTING_EN
-LISTING_DE_FIXTURE = LISTING_DE
-LISTING_NL_FIXTURE = LISTING_NL
-LISTING_PL_FIXTURE = LISTING_PL
-LISTING_ZH_FIXTURE = LISTING_ZH
-LISTING_JA_FIXTURE = LISTING_JA
-SEARCH_EN_FIXTURE = SEARCH_EN
-SEARCH_NO_RESULTS_FIXTURE = SEARCH_NO_RESULTS
-AUCTION_EN_FIXTURE = AUCTION_EN
-LOT_CLOSED_FIXTURE = LOT_CLOSED
-LOT_LIVE_FIXTURE = LOT_LIVE
-AUCTIONS_INDEX_FIXTURE = AUCTIONS_INDEX
-BLOCKED_403_FIXTURE = BLOCKED_403
+LISTING_URL = "https://uae.dubizzle.com/motors/used-cars/"
+PROPERTY_URL = "https://uae.dubizzle.com/property-for-rent/residential/apartmentflat/"
+# The `---{ad id}` suffix is kept on ONE line on purpose: the repo's own
+# secret check subtracts that exact shape before looking for a 32-hex string,
+# and splitting it across a line continuation puts a bare hex run in the
+# source that the check then flags on its own repository.
+_AD_TAIL = "2683-pm-0-downpayment-bmw-x4-m-kitbmw-serv-2-348---c62da0127c944016911ca4406c7832c4"
+AD_URL = ("https://dubai.dubizzle.com/motors/used-cars/bmw/x4/2026/02/05/"
+          + _AD_TAIL + "/")
+HUB_URL = "https://uae.dubizzle.com/"
 
 
 # ---------------------------------------------------------------------------
 # Money
 # ---------------------------------------------------------------------------
 def test_price_parsing():
-    group("prices: one currency, five written forms of it")
+    group("prices: one currency, and the traps around reading it off a tile")
     ok = True
-    # All five seen on the SAME lots across the locale captures, which is why
-    # every one of them is pinned rather than sampled.
+    # The DOM path is the only one that reads a price out of text — the
+    # payload states integers — so these are the cases that path must get
+    # right. Every grouping convention is pinned, not sampled, because a
+    # parser that handles two of the three is wrong by a factor of 1000 on
+    # the third.
     cases = [
-        ("€1,535", 1535.0, "en: symbol first, comma grouping"),
-        ("€ 1.535", 1535.0, "nl/pl: symbol, space, dot grouping"),
-        ("1.535 €", 1535.0, "de: symbol last"),
-        ("€27", 27.0, "no grouping"),
-        ("€1,400", 1400.0, "ja/zh-Hant: still euro, still comma"),
-        ("€10,950", 10950.0, "five figures"),
-        ("€ 1.234,56", 1234.56, "dot grouping with real cents"),
-        ("€1,234.56", 1234.56, "comma grouping with real cents"),
+        ("AED 389,000", 389000.0, "the form this site actually prints"),
+        ("AED 1,234.56", 1234.56, "dot decimal, comma grouping"),
+        ("AED 1.234,56", 1234.56, "comma decimal, dot grouping"),
+        ("AED 1 234 567", 1234567.0, "plain-space grouping"),
+        ("AED 1 234 567", 1234567.0, "NBSP grouping, as a page renders it"),
+        ("AED 1 234 567", 1234567.0, "narrow NBSP grouping"),
+        ("AED 1 234 567", 1234567.0, "thin-space grouping"),
+        ("389,000 AED", 389000.0, "the ISO code as a suffix"),
+        ("AED 1,234", 1234.0, "three trailing digits is a grouping, not cents"),
+        ("13500 AED", 13500.0, "no grouping at all"),
     ]
     for text, want, why in cases:
-        got = price_in(text)
-        ok &= check("%r -> %s (%s)" % (text, want, why), got == want)
+        ok &= check("%-28r -> %-12s (%s)" % (text, want, why),
+                    price_in(text) == want)
 
-    # A no-break space is what a rendered page actually uses so the number
-    # does not wrap, and missing it parses "1 535" as 535.
-    for space, name in ((" ", "plain"), (" ", "NBSP"),
-                        (" ", "narrow NBSP"), (" ", "thin")):
-        ok &= check("1%s535 € with a %s space -> 1535" % (space, name),
-                    price_in("1%s535 €" % space) == 1535.0)
+    # §4's percentage trap, in both word orders. Rejecting the match
+    # afterwards is not enough — a rejected match has already consumed the
+    # currency code beside it, so the percentage is stripped BEFORE matching.
+    ok &= check("a -16% badge beside a price does not become the price",
+                price_in("-16% AED 25.999") == 25999.0)
+    ok &= check("a -%10,34 badge (percent first) does not become the price",
+                price_in("-%10,34 AED 25.999") == 25999.0)
 
-    # Percentages come out BEFORE prices are matched, not after: a rejected
-    # match has already consumed the symbol, so filtering afterwards loses
-    # the real price too.
-    ok &= check("a -16% badge beside €150 does not become the price",
-                price_in("-16% €150") == 150.0)
-    ok &= check("a -%10,34 badge (Turkish word order) is skipped too",
-                price_in("-%10,34 €25.999") == 25999.0)
-    ok &= check("prices_in keeps reading order",
-                prices_in("€10 and €20") == [10.0, 20.0])
-    ok &= check("no euro amount -> no price", price_in("Current bid") is None)
+    # §4's ISO allowlist: a bare three-letter token is not a currency.
+    ok &= check("a size chart is not a price", price_in("XXL 100") is None)
+    ok &= check("a bare number is not a price", price_in("389000") is None)
+    ok &= check("a year is not a price", price_in("2024") is None)
 
-    # The site's own empty-price placeholder is a ZERO-WIDTH SPACE, not an
-    # empty node: `.c-lot-card__price` is present on 24 of 24 cards while 2-3
-    # of them hold nothing at all. A truthiness check on the node reports
-    # 100% coverage and writes an invisible character into every row.
-    for char, name in (("​", "U+200B"), ("‌", "U+200C"),
-                       ("﻿", "U+FEFF")):
-        ok &= check("a bare %s reads as no price, not as a price" % name,
-                    price_in(char) is None)
+    # Space grouping requires FULL three-digit groups, or a spec list beside
+    # a price merges into one number.
+    ok &= check("a spec list does not merge into one number",
+                price_in("AED 5 yrs 6 yrs 200") != 5620000.0)
+
+    ok &= check("two prices in one string come back in order",
+                prices_in("AED 349,000 AED 389,000") == [349000.0, 389000.0])
     return ok
 
 
 # ---------------------------------------------------------------------------
-# What `price` MEANS on an auction site
-# ---------------------------------------------------------------------------
-def test_bid_state():
-    group("bid state resolved through the page's own dictionary")
-    ok = True
-    # Same three keys in every locale, and the labels come from the page
-    # rather than from a table written here - which is the whole point, since
-    # a table would need 18 languages and would go stale on a retranslation.
-    expected = {
-        "LISTING_EN": {"Current bid": "current", "Final bid": "final",
-                       "Starting bid": "starting"},
-        "LISTING_DE": {"Aktuelles Gebot": "current", "Endgebot": "final"},
-        "LISTING_NL": {"Huidig bod": "current", "Eindbod": "final"},
-        "LISTING_PL": {"Aktualna oferta": "current",
-                       "Ostateczna oferta": "final"},
-        "LISTING_ZH": {"現時出價": "current",
-                       "最終出價": "final"},
-    }
-    for name, want in expected.items():
-        labels = bid_kind_labels(next_data(globals()[name]))
-        for label, kind in want.items():
-            ok &= check("%s: %r -> %s" % (name, label, kind),
-                        labels.get(label) == kind)
-
-    # The disambiguation that makes the approach necessary rather than merely
-    # tidy: two keys read "Current bid" in English, and in zh-Hant they are
-    # different strings. A table built from the English page would have
-    # matched nothing in Chinese and left bid_kind null on every row.
-    zh = bid_kind_labels(next_data(LISTING_ZH))
-    ok &= check("zh-Hant uses the CARD's key (現時出價), "
-                "not auction_current_bid (當前出價)",
-                zh.get("現時出價") == "current"
-                and "當前出價" not in zh)
-
-    # Three quantities, one column, and the label is the only thing telling
-    # them apart. `starting` is a FLOOR nobody has bid.
-    rows = parse_products(LISTING_EN, CAT_URL, 1)
-    kinds = {r.bid_kind for r in rows}
-    ok &= check("a listing row carries bid_kind or nothing, never a guess",
-                kinds <= {"current", "final", "starting", None})
-    ok &= check("a row with no price has no bid_kind either",
-                all(r.bid_kind is None for r in rows if r.price is None))
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# Listing rows, by value
+# Rows: VALUES on real fixtures, not coverage (§10)
 # ---------------------------------------------------------------------------
 def test_listing_values():
-    group("listing rows: pinned VALUES, not coverage")
+    group("listing rows: pinned VALUES on every vertical, not coverage")
     ok = True
-    rows = parse_products(LISTING_EN, CAT_URL, 1)
-    ok &= check("3 rows from the 3-lot English fixture", len(rows) == 3)
-    first = rows[0]
-    ok &= check("sku is the site's own lot id", first.sku == "106506005")
-    ok &= check("price 1535.0 from the card", first.price == 1535.0)
-    ok &= check("currency EUR", first.currency == "EUR")
-    ok &= check("bid_kind current", first.bid_kind == "current")
-    ok &= check("title from the payload",
-                first.title.startswith("Cartier - Tank Must de Cartier PM"))
-    ok &= check("price_source records BOTH sources",
-                first.price_source == "next_data+dom")
-    ok &= check("auction_id from the payload", first.auction_id == "1264941")
-    ok &= check("url is the lot's own absolute url",
-                first.url.startswith("https://www.catawiki.com/en/l/106506005-"))
-    ok &= check("image url from the payload, not an <img> tag",
-                (first.image_url or "").startswith("https://assets.catawiki"))
 
-    # From the hydrated CARD, never from the payload: the payload's own
-    # favoriteCount is 0 on 288 of 288 lots across 12 captures while the card
-    # shows the real figure on all 24 of each. A field that is present,
-    # authoritative-looking and uniformly wrong.
-    ok &= check("favorite_count comes from the card (144, not the payload's 0)",
-                first.favorite_count == 144)
-    payload_favs = {l.get("favoriteCount")
-                    for l in lots_payload(next_data(LISTING_EN))[1]["lots"]}
-    ok &= check("...and the payload really does say 0", payload_favs == {0})
+    # make_fixtures.py pinned every column of every kept ad against the
+    # untrimmed capture. Re-asserting all of it here is what stops a parser
+    # change from being "still 100% populated" and entirely wrong — the
+    # defect §10 names, where a review_count of 445279961 passed a coverage
+    # check on every row of every run.
+    for name in ("motors_p1", "motors_p2", "motors_ar_p1", "property_rent",
+                 "property_sale", "classified", "jobs", "community"):
+        rows = {r.sku: r for r in fx_rows(name)}
+        want = FIX[name]["expect"]
+        ok &= check("%s: %d row(s), the same skus as when pinned"
+                    % (name, len(want)), set(rows) == set(want))
+        mismatches = []
+        for sku, fields_ in want.items():
+            got = rows.get(sku)
+            if got is None:
+                continue
+            for field_name, value in fields_.items():
+                if getattr(got, field_name) != value:
+                    mismatches.append("%s.%s: %r != %r"
+                                      % (sku[-18:], field_name,
+                                         getattr(got, field_name), value))
+        ok &= check("%s: every column of every row matches its pinned value%s"
+                    % (name, "" if not mismatches else " -- " + "; ".join(mismatches[:3])),
+                    not mismatches)
 
-    ok &= check("page and position are threaded through",
-                [(r.page, r.position) for r in rows] == [(1, 1), (2, 2), (3, 3)]
-                or [(r.page, r.position) for r in rows] == [(1, 1), (1, 2), (1, 3)])
-    ok &= check("page+position unique across a two-page merge",
-                len({(r.page, r.position) for r in
-                     parse_products(LISTING_EN, CAT_URL, 1)
-                     + parse_products(LISTING_EN, CAT_URL, 2)}) == 6)
-    ok &= check("source is this site on every row",
-                {r.source for r in rows} == {"catawiki.com"})
-    ok &= check("listing_kind says which page kind produced the row",
-                {r.listing_kind for r in rows} == {"category"})
+    # One row read out loud, so a reader can see what a row IS without
+    # running anything.
+    motors = fx_rows("motors_p1")
+    first = motors[0]
+    ok &= check("a motors row names its make from the page's own JSON-LD",
+                first.brand is not None and first.brand[0].isupper())
+    ok &= check("a motors row carries AED and a number, or neither",
+                (first.price is None) == (first.currency is None))
+    ok &= check("a motors row's sku is its URL path",
+                first.sku and first.sku.startswith("/motors/used-cars/"))
+    ok &= check("a motors row's url is on an emirate subdomain, not the "
+                "browse host",
+                ".dubizzle.com" in first.url and "uae.dubizzle.com" not in first.url)
+    ok &= check("a motors row carries the site's numeric id as well as the path",
+                isinstance(first.listing_id, int) and first.listing_id > 0)
+    ok &= check("posted_at and bumped_at are ISO-8601 UTC, not epochs",
+                first.posted_at and first.posted_at.endswith("+00:00"))
+    ok &= check("attributes is a mapping of the site's own slugs",
+                isinstance(first.attributes, dict) and first.attributes)
+    ok &= check("year and kilometers are promoted out of attributes as ints",
+                isinstance(first.year, int) and isinstance(first.kilometers, int))
 
-    # No brand on a listing, and that is deliberate: the title reads
-    # "Cartier - Tank Must ..." and splitting on the dash would be a guess
-    # presented as a fact. The lot page has a real Brand field.
-    ok &= check("brand is null on a listing row rather than split off a title",
-                all(r.brand is None for r in rows))
+    prop = fx_rows("property_rent")[0]
+    ok &= check("a rental states the period its price is quoted for",
+                prop.payment_frequency in ("Yearly", "Monthly", "Weekly", "Daily"))
+    ok &= check("a rental carries bedrooms and bathrooms",
+                isinstance(prop.bedrooms, int) and isinstance(prop.bathrooms, int))
+    ok &= check("a rental carries no `year`, and a car carries no `bedrooms`",
+                prop.year is None and first.bedrooms is None)
 
-    # Locale coverage, by value in each language.
-    per_locale = {
-        "LISTING_DE": ("https://www.catawiki.com/de/c/333-armbanduhren", 150.0),
-        "LISTING_NL": ("https://www.catawiki.com/nl/c/333-horloges", 150.0),
-        "LISTING_PL": ("https://www.catawiki.com/pl/c/333-zegarki", 35.0),
-        "LISTING_ZH": ("https://www.catawiki.com/zh-Hant/c/333-watches", 27.0),
-        "LISTING_JA": ("https://www.catawiki.com/ja/c/333-watches", None),
-    }
-    for name, (url, want_first_price) in per_locale.items():
-        got = parse_products(globals()[name], url, 1)
-        ok &= check("%s: 3 rows, currency EUR everywhere" % name,
-                    len(got) == 3
-                    and {r.currency for r in got if r.price is not None} <= {"EUR"})
-        ok &= check("%s: first row's price is %s" % (name, want_first_price),
-                    got[0].price == want_first_price)
+    # The promoted slot, labelled rather than silently merged.
+    kinds = {r.listing_kind for r in motors}
+    ok &= check("the Car of the Week is labelled, not passed off as a result",
+                "car_of_the_week" in kinds and "organic" in kinds)
+    cotw = [r for r in motors if r.listing_kind == "car_of_the_week"]
+    ok &= check("it is emitted AFTER the organic results, so position 1 is a "
+                "real result", all(r.position > 1 for r in cotw))
 
-    search = parse_products(SEARCH_EN, SEARCH_URL, 1)
-    ok &= check("a search page yields rows with listing_kind=search",
-                {r.listing_kind for r in search} == {"search"})
-    ok &= check("search values pinned (4200, 12500, 1950)",
-                [r.price for r in search] == [4200.0, 12500.0, 1950.0])
+    # page + position, together, must identify a row (§18).
+    two = fx_rows("motors_p1") + fx_rows("motors_p2")
+    pairs = [(r.page, r.position) for r in two]
+    ok &= check("page+position is unique across a two-page run",
+                len(set(pairs)) == len(pairs))
+    ok &= check("page is threaded into the rows, not defaulted to 1",
+                {r.page for r in two} == {1, 2})
     return ok
 
 
-def test_reserve_invariant():
-    group("the invariant behind every null price on this site")
+def test_null_price_is_the_site_and_not_the_parser():
+    group("a null price: which of them are the site's answer")
     ok = True
-    # 57 of 57 blank prices across 13 captures carried reservePriceSet: True,
-    # spread through the page rather than clustered at its end - so a null
-    # price here is the site's behaviour and not a hydration failure. This is
-    # the check the canary runs instead of a coverage threshold, because a
-    # threshold cannot tell a reserve-heavy auction from a broken run.
-    for name, url in (("LISTING_EN", CAT_URL), ("LISTING_PL",
-                      "https://www.catawiki.com/pl/c/333-zegarki"),
-                      ("LISTING_ZH", "https://www.catawiki.com/zh-Hant/c/333-watches"),
-                      ("AUCTION_EN", AUCTION_URL)):
-        rows = parse_products(globals()[name], url, 1)
-        blank = [r for r in rows if r.price is None]
-        ok &= check("%s: every blank price is a reserve lot (%d of them)"
-                    % (name, len(blank)),
-                    all(r.reserve_price_set for r in blank))
-        ok &= check("%s: a priced row still reports its reserve flag" % name,
-                    all(r.reserve_price_set is not None for r in rows))
+    # §9: a column that is null on every row of every run should not exist —
+    # so the fact that `price` is null on every jobs row has to be a
+    # MEASUREMENT written down, not an unexplained gap. It is also why the
+    # price-coverage floor is per-vertical.
+    jobs = fx_rows("jobs")
+    ok &= check("a jobs ad publishes no salary: every row null",
+                jobs and all(r.price is None for r in jobs))
+    ok &= check("and says so in price_source rather than leaving a bare null",
+                all(r.price_source.endswith(":no-price") for r in jobs))
+    ok &= check("a row with no price carries no currency either",
+                all(r.currency is None for r in jobs))
+
+    priced = fx_rows("motors_p1") + fx_rows("classified") + fx_rows("property_rent")
+    ok &= check("motors, classified and property price every row",
+                all(r.price is not None for r in priced))
+    ok &= check("and none of them claims a no-price source",
+                not any(r.price_source.endswith(":no-price") for r in priced))
+
+    # §4's guard, one line, and it catches the regression forever.
+    ok &= check("no row has an original_price at or below its price",
+                not [r for r in priced
+                     if r.original_price is not None and r.price is not None
+                     and r.original_price <= r.price])
+    ok &= check("no row has a zero or negative discount",
+                not [r for r in priced
+                     if r.discount_pct is not None and r.discount_pct <= 0])
+
+    for engine in ENGINE_FILES:
+        src = open(os.path.join(REPO_ROOT, engine), encoding="utf-8").read()
+        ok &= check("%s's price floor is per-vertical and 0 for jobs" % engine,
+                    '"jobs": 0' in src and '"motors": 90' in src)
     return ok
 
 
-def test_lot_page():
-    group("a lot page: read from the payload, never from the DOM")
+# ---------------------------------------------------------------------------
+# The three sources, and the join between them
+# ---------------------------------------------------------------------------
+def test_jsonld_enrichment():
+    group("JSON-LD: an enrichment, joined on the PATH and not on the URL")
     ok = True
-    row = parse_lot_page(LOT_CLOSED, LOT_URL)
-    ok &= check("one row", row is not None)
-    ok &= check("price 1300.0 - the last bid, from the payload",
-                row.price == 1300.0)
-    ok &= check("bid_kind final on a closed lot", row.bid_kind == "final")
-    # Final is not the same as sold: this lot reached EUR 1,300 with its
-    # reserve unmet and changed hands for nothing at all.
-    ok &= check("sold False even though a final bid exists", row.sold is False)
-    ok &= check("reserve_price_met False", row.reserve_price_met is False)
-    ok &= check("reserve_price_set True", row.reserve_price_set is True)
-    ok &= check("estimate 2100-2400, euro only",
-                (row.estimate_min, row.estimate_max) == (2100.0, 2400.0))
-    ok &= check("absolute close time, per LOT, from epoch millis",
-                row.bidding_end_at == "2026-09-10T19:23:56+00:00")
-    ok &= check("seller country and score",
-                row.seller_country and row.seller_score is not None)
-    ok &= check("price_source is the payload alone",
-                row.price_source == "next_data")
+    # The measurement that decided the payload is primary (§4).
+    have_itemlist = {name: len(product_parser.jsonld_items_by_url(fx(name)[0]))
+                     for name in ("motors_p1", "property_rent", "classified",
+                                  "jobs", "community")}
+    ok &= check("motors and property publish an ItemList",
+                have_itemlist["motors_p1"] and have_itemlist["property_rent"])
+    ok &= check("classified, jobs and community publish none — which is why "
+                "JSON-LD is not the primary path here",
+                have_itemlist["classified"] == 0
+                and have_itemlist["jobs"] == 0
+                and have_itemlist["community"] == 0)
 
-    # The bid count is a FLOOR: the site returns the last ten bids and states
-    # no total, and two lots with very different activity both reported
-    # exactly 10.
-    ok &= check("bid_count 10 with bid_count_is_floor True",
-                row.bid_count == 10 and row.bid_count_is_floor is True)
+    # The Arabic case. Keyed on the full URL this join matched 25 of 25 ads
+    # in English and 0 of 25 in Arabic, silently emptying three columns while
+    # the run reported success.
+    ar = fx_rows("motors_ar_p1")
+    ok &= check("an Arabic listing still joins its JSON-LD",
+                all(r.price_source.startswith("next_data+jsonld") for r in ar))
+    ok &= check("so brand survives the Arabic page",
+                all(r.brand for r in ar))
+    en = fx_rows("motors_p1")
+    ok &= check("price_source names both sources where both exist",
+                all(r.price_source == "next_data+jsonld" for r in en))
+    cls = fx_rows("classified")
+    ok &= check("and names only the payload where the page has no ItemList",
+                all(r.price_source == "next_data" for r in cls))
+    ok &= check("a vertical with no ItemList has no brand, rather than one "
+                "guessed from the title", all(r.brand is None for r in cls))
 
-    live = parse_lot_page(LOT_LIVE, "https://www.catawiki.com/en/l/106506005-x")
-    ok &= check("the live-lot fixture parses too", live is not None)
-    ok &= check("brand from the specification id, not its name",
-                live.brand == "Cartier")
-
-    # A lot page renders 20-40 OTHER lots in a "similar lots" carousel, using
-    # the very same class a listing uses for its own price. Reading the DOM
-    # here would return a neighbour's number.
-    ok &= check("the lot fixture has no c-lot-card price nodes at all, so a "
-                "DOM read could only have found a neighbour's",
-                "c-lot-card__price" not in LOT_CLOSED)
-    ok &= check("no starting_bid column: it was the same number as "
-                "next_min_bid under a name that claimed otherwise",
-                "starting_bid" not in [f.name for f in fields(Product)])
+    # `offers` in each of its legal shapes (§4's table).
+    ok &= check("an explicit `\"offers\": null` does not raise",
+                product_parser._ld_offer(None) == {})
+    ok &= check("`offers` as a list takes the first dict",
+                product_parser._ld_offer([1, {"price": 5}]) == {"price": 5})
+    ok &= check("an ImageObject image is read",
+                product_parser._ld_image({"@type": "ImageObject",
+                                          "url": "https://x/y.jpg"}) == "https://x/y.jpg")
+    ok &= check("a list of images takes the first usable one",
+                product_parser._ld_image([{"contentUrl": "https://x/a.jpg"}])
+                == "https://x/a.jpg")
+    ok &= check("currency comes from the page's own AggregateOffer",
+                product_parser.jsonld_currency(fx("motors_p1")[0]) == "AED")
     return ok
 
 
-def test_auction_page_is_a_listing():
-    group("an auction page is a listing, and a better one")
+def test_dom_fallback_agrees_with_the_payload():
+    group("the DOM fallback: an independent path that agrees")
     ok = True
-    ok &= check("listing_kind auction", listing_kind(AUCTION_URL) == "auction")
-    rows = parse_products(AUCTION_EN, AUCTION_URL, 1)
-    ok &= check("rows come out of its bare `lots` list", len(rows) == 3)
-    ok &= check("listing_kind on the row says auction",
-                {r.listing_kind for r in rows} == {"auction"})
-    # The columns a category listing cannot give at all.
-    ok &= check("every row carries the auction's ABSOLUTE close time",
-                all(r.auction_close_at == "2026-09-10T18:00:00Z" for r in rows))
-    ok &= check("...and its status", {r.auction_status for r in rows} == {"closed"})
-    ok &= check("a category row has neither",
-                all(r.auction_close_at is None and r.auction_status is None
-                    for r in parse_products(LISTING_EN, CAT_URL, 1)))
-    ok &= check("total comes from the auction's own lot count",
-                total_results(AUCTION_EN) == 130)
-    # 130 lots on one page and no page links at all: dividing the total by
-    # lotsPerPage would invent pages that do not exist.
-    ok &= check("total_pages is 1, not 130/24", total_pages(AUCTION_EN, AUCTION_URL) == 1)
-    ok &= check("an auction page does not paginate by URL",
-                not paginates_by_url(AUCTION_URL))
-    ok &= check("page_url refuses to build one", page_url(AUCTION_URL, 2) is None)
-    return ok
+    # The honest test of a fallback is to take the primary away. Stripping
+    # the payload out of three verticals leaves the DOM path recovering the
+    # same ads at the same prices — which is what makes it a fallback rather
+    # than a comment.
+    for name in ("motors_p1", "property_rent", "classified"):
+        html, url, _ = fx(name)
+        stripped = re.sub(r'<script[^>]+id="__NEXT_DATA__"[^>]*>.*?</script>',
+                          "", html, flags=re.S)
+        full = {r.sku: r for r in parse_products(html, url)}
+        dom = {r.sku: r for r in parse_products(stripped, url)}
+        ok &= check("%s: the DOM alone finds the same ads" % name,
+                    set(dom) == set(full))
+        disagreements = [s for s in dom if dom[s].price != full[s].price]
+        ok &= check("%s: and reads the same price for every one of them"
+                    % name, not disagreements)
+        ok &= check("%s: the DOM rows say so in price_source" % name,
+                    all(r.price_source.startswith("dom") for r in dom.values()))
+        ok &= check("%s: and read the currency out of the price node's "
+                    "SIBLING, which is where this site puts it" % name,
+                    all(r.currency == "AED" for r in dom.values()
+                        if r.price is not None))
 
+    # §4's tile-scoping failure, in the shape it takes here.
+    html, url, _ = fx("motors_p1")
+    soup = BeautifulSoup(html, "html.parser")
+    anchors = [a for a in soup.select("a[href]")
+               if product_parser._is_ad_href(a.get("href"))]
+    ok &= check("a tile scope stops at exactly one ad, not at the grid",
+                all(len({x.get("href") for x in product_parser._tile_of(a).select("a[href]")
+                         if product_parser._is_ad_href(x.get("href"))}) == 1
+                    for a in anchors))
 
-def test_auctions_index():
-    group("the auctions index: a work list, honestly thin")
-    ok = True
-    rows = auction_rows(AUCTIONS_INDEX, AUCTIONS_URL, 1)
-    ok &= check("3 auctions from the 3-card fixture", len(rows) == 3)
-    ok &= check("sku is the auction id", rows[0].sku == "1243988")
-    ok &= check("title from the card's first h6",
-                rows[0].title == "Figures & Figurines Auction")
-    ok &= check("the relative end phrase is kept verbatim, not converted",
-                rows[0].ends_text is not None)
-    ok &= check("url is absolute and points at the auction",
-                "/en/a/1243988-" in rows[0].url)
-    ok &= check("rows are Auction, not Product",
-                all(isinstance(r, Auction) for r in rows))
-    ok &= check("ROW_CLASS_BY_MODE maps the mode to it",
-                ROW_CLASS_BY_MODE["auctions"] is Auction)
-    # The badge in the image corner is `+127` on one card and `18+` on the
-    # next - a further-lots hint and an age warning in the same place - so no
-    # lot-count column is published from it at all.
-    ok &= check("no lot-count column read off an ambiguous badge",
-                not any(f.name.startswith("lot_count") for f in fields(Auction)))
-    ok &= check("no curator column: the index names a person",
-                not any("curator" in f.name for f in fields(Auction)))
-    # The links survive a redesign of the card.
-    broken = AUCTIONS_INDEX.replace('data-testid="all-auctions-card"',
-                                    'data-testid="renamed"')
-    with redirect_stderr(io.StringIO()):
-        fallback = auction_rows(broken, AUCTIONS_URL, 1)
-    ok &= check("cards renamed -> rows recovered from the hrefs alone",
-                len(fallback) == 3 and fallback[0].sku == "1243988")
-    ok &= check("auction_links reads ids and slugs",
-                dict(auction_links(AUCTIONS_INDEX)).get("1243988")
-                == "figures-figurines-auction")
+    # A hub page is full of ad links in its promo rails; the fallback must
+    # not turn them into rows.
+    hub_html, hub_url, _ = fx("hub_home")
+    ok &= check("the fallback does not fire on a hub URL",
+                parse_products(hub_html, hub_url) == [])
     return ok
 
 
@@ -526,172 +474,238 @@ def test_auctions_index():
 # URLs
 # ---------------------------------------------------------------------------
 def test_urls():
-    group("hosts, locales and lot ids")
+    group("hosts, locales, verticals and the row key")
     ok = True
-    ok &= check("18 locales, from the site's own hreflang set", len(LOCALES) == 18)
-    ok &= check("two of them carry capitals",
-                "zh-Hans" in LOCALES and "zh-Hant" in LOCALES)
-    # A lowercasing normaliser would break Chinese, which is served
-    # case-sensitively.
-    ok &= check("zh-Hant survives in its own casing",
-                locale_of("https://www.catawiki.com/zh-Hant/c/333-watches") == "zh-Hant")
-    ok &= check("a lowercase spelling still resolves to the site's casing",
-                locale_of("https://www.catawiki.com/zh-hant/c/1-x") == "zh-Hant")
-    ok &= check("an unknown prefix is not a locale",
-                locale_of("https://www.catawiki.com/xx/c/1-x") is None)
-    ok &= check("both hosts recognised",
-                all(is_supported_host("https://%s/en/c/1-x" % h) for h in HOSTS))
-    ok &= check("another catawiki TLD is refused WITH the reason",
-                "is not a Catawiki host"
-                in (unsupported_reason("https://www.catawiki.de/en/c/1-x") or ""))
-    ok &= check("a missing locale prefix says so",
-                "locale prefix"
-                in (unsupported_reason("https://www.catawiki.com/xx/c/1-x") or ""))
-    ok &= check("a good URL has no reason", unsupported_reason(CAT_URL) is None)
+    ok &= check("two locales, from the site's own hreflang set",
+                set(LOCALES) == {"en", "ar"})
+    ok &= check("the browse host is supported", is_supported_host(LISTING_URL))
+    ok &= check("so is every emirate subdomain an ad is published under",
+                all(is_supported_host("https://%s/motors/used-cars/" % h)
+                    for h in product_parser.EMIRATE_HOSTS))
 
-    ok &= check("page kinds", [listing_kind(u) for u in (
-        CAT_URL, SEARCH_URL, LOT_URL, AUCTION_URL, AUCTIONS_URL,
-        "https://www.catawiki.com/en/help")]
-        == ["category", "search", "lot", "auction", "auctions", ""])
+    # §5: refuse WITH the reason. "is not a dubizzle site" would be false for
+    # a dubizzle-branded OLX site and would send the reader hunting for a typo.
+    for host in ("www.dubizzle.com.bh", "www.dubizzle.com.om", "dubizzle.com.eg"):
+        why = unsupported_reason("https://%s/" % host)
+        ok &= check("%s is refused, and the reason names the OLX platform" % host,
+                    why is not None and "OLX" in why)
+    ok &= check("a non-dubizzle host is refused too",
+                unsupported_reason("https://www.olx.com.lb/") is not None)
+    ok &= check("and a URL with no hostname does not raise",
+                unsupported_reason("not a url") is not None)
 
-    ok &= check("the lot id comes out of the URL",
-                sku_from_url("https://www.catawiki.com/en/l/106583855-omega-x")
-                == "106583855")
-    # The slug is decorative: the site translates it per locale and
-    # canonicalises a foreign one itself, so the id is the key.
-    ok &= check("a foreign slug does not change the id",
-                sku_from_url("https://www.catawiki.com/nl/l/106583855-anything")
-                == "106583855")
-    ok &= check("a category keeps its stable id beside the slug",
-                category_from_url(CAT_URL) == "333-watches")
-    ok &= check("the same category in Dutch resolves to its own slug",
-                category_from_url("https://www.catawiki.com/nl/c/333-horloges")
-                == "333-horloges")
-    ok &= check("tracking parameters and the #filters fragment come off",
-                strip_tracking(CAT_URL + "?utm_source=x&page=2#filters")
-                == CAT_URL + "?page=2")
-    ok &= check("EUR on every locale, and it is a fact rather than a default",
-                {host_currency("https://www.catawiki.com/%s/c/1-x" % loc)
-                 for loc in LOCALES} == {CURRENCY} == {"EUR"})
+    ok &= check("the locale is read off the path, not off a flag",
+                locale_of(LISTING_URL) == "en"
+                and locale_of("https://uae.dubizzle.com/ar/motors/used-cars/") == "ar")
+    ok &= check("a locale is not invented for a host we do not read",
+                locale_of("https://www.olx.com.lb/ar/x/") is None)
+    ok &= check("the currency is AED and comes from the host, not a default",
+                host_currency(LISTING_URL) == CURRENCY == "AED")
+    ok &= check("and is not claimed for a host we do not read",
+                host_currency("https://www.dubizzle.com.bh/") is None)
+
+    ok &= check("every vertical the site's own taxonomy names is known",
+                set(product_parser.VERTICALS) >= {
+                    "motors", "classified", "property-for-sale",
+                    "property-for-rent", "jobs", "jobs-wanted", "community"})
+    ok &= check("a listing URL is a listing", listing_kind(LISTING_URL) == "listing")
+    ok &= check("an individual ad is an ad", listing_kind(AD_URL) == "ad")
+    ok &= check("a hub is a hub", listing_kind(HUB_URL) == "home")
+    ok &= check("something else is neither",
+                listing_kind("https://uae.dubizzle.com/help/") == "")
+
+    # The row key. Four of five verticals carry a 32-hex uuid in the URL and
+    # property carries neither of its two ids, which is why sku is the path.
+    ok &= check("an ad's sku is its path, without the trailing slash",
+                sku_from_url(AD_URL)
+                == "/motors/used-cars/bmw/x4/2026/02/05/" + _AD_TAIL)
+    ok &= check("the /ar prefix is stripped, so an Arabic run and an English "
+                "run of the same ad diff as the same listing",
+                sku_from_url("https://dubai.dubizzle.com/ar/property-for-rent/"
+                             "residential/apartmentflat/2026/8/21/x-2-270682/")
+                == sku_from_url("https://dubai.dubizzle.com/property-for-rent/"
+                                "residential/apartmentflat/2026/8/21/x-2-270682/"))
+    ok &= check("a category URL has no sku — it is not an ad",
+                sku_from_url(LISTING_URL) is None)
+    ok &= check("a property ad, which carries neither of its ids in its URL, "
+                "still gets a sku",
+                sku_from_url("https://dubai.dubizzle.com/property-for-rent/"
+                             "residential/apartmentflat/2026/8/21/x-2-270682/")
+                is not None)
+
+    ok &= check("the category is the whole chain, not the leaf",
+                category_from_url("https://uae.dubizzle.com/classified/"
+                                  "electronics/televisions/")
+                == "classified/electronics/televisions")
+    ok &= check("an ad's own category stops at the date in its path",
+                category_from_url(AD_URL) == "motors/used-cars/bmw/x4")
+    ok &= check("a hub has no category", category_from_url(HUB_URL) is None)
+
+    ok &= check("campaign parameters are dropped and filters kept",
+                strip_tracking(LISTING_URL + "?utm_source=x&price_max=50000")
+                == LISTING_URL + "?price_max=50000")
     return ok
 
 
 def test_pagination():
-    group("pagination: arithmetic first, and a cap the site enforces")
+    group("pagination: the site's own count, and an end it states outright")
     ok = True
-    ok &= check("both listing kinds paginate by URL",
-                paginates_by_url(CAT_URL) and paginates_by_url(SEARCH_URL))
-    ok &= check("a lot page does not", not paginates_by_url(LOT_URL))
-    ok &= check("page 1 has no page parameter", page_url(CAT_URL, 1) == CAT_URL)
-    ok &= check("page 2 is built, not followed",
-                page_url(CAT_URL, 2) == CAT_URL + "?page=2")
-    ok &= check("a search keeps its query", page_url(SEARCH_URL, 2)
-                == "https://www.catawiki.com/en/s?q=rolex&page=2")
-    ok &= check("an existing page parameter is replaced, not duplicated",
-                page_url(CAT_URL + "?page=7", 2) == CAT_URL + "?page=2")
-    ok &= check("page numbers read back", page_number_from_url(CAT_URL + "?page=42") == 42)
-    ok &= check("no page parameter means page 1", page_number_from_url(CAT_URL) == 1)
+    ok &= check("a listing paginates by URL", paginates_by_url(LISTING_URL))
+    ok &= check("an individual ad does not", not paginates_by_url(AD_URL))
+    ok &= check("page 1 is the bare URL, as the site's own prev-link is",
+                page_url(LISTING_URL, 1) == LISTING_URL)
+    ok &= check("page 2 is ?page=2", page_url(LISTING_URL, 2) == LISTING_URL + "?page=2")
+    ok &= check("the page parameter replaces rather than duplicates",
+                page_url(LISTING_URL + "?page=7", 2) == LISTING_URL + "?page=2")
+    ok &= check("and the site's own filters survive it",
+                page_url(LISTING_URL + "?price_max=50000", 3)
+                == LISTING_URL + "?price_max=50000&page=3")
+    ok &= check("the page number is read back out of the URL",
+                page_number_from_url(LISTING_URL + "?page=12") == 12
+                and page_number_from_url(LISTING_URL) == 1)
+    ok &= check("a nonsense page parameter reads as page 1 rather than raising",
+                page_number_from_url(LISTING_URL + "?page=abc") == 1)
 
-    # The cap is the whole point. `?page=99999` returned HTTP 200 with
-    # `currentPage: 100` and page 100's own lots, so a planner that ignores
-    # it re-fetches page 100 for every further page, adds no new sku, and a
-    # data-based terminator reads "listing exhausted" - a COMPLETE run
-    # holding 2,400 of 11,681 lots.
-    ok &= check("the cap is the site's own 100", PAGE_CAP == 100)
-    ok &= check("page 100 is buildable", page_url(CAT_URL, 100) is not None)
-    ok &= check("page 101 is refused", page_url(CAT_URL, 101) is None)
-    ok &= check("total_pages is capped, never the raw division",
-                total_pages(LISTING_EN, CAT_URL) == 100)
-    ok &= check("...and the pages beyond it are REPORTED, not swallowed",
-                pages_beyond_cap(LISTING_EN) == 387)
-    ok &= check("a listing inside the cap reports nothing beyond it",
-                pages_beyond_cap(SEARCH_EN) == 0
-                and total_pages(SEARCH_EN, SEARCH_URL) == 29)
-    ok &= check("total comes from the payload", total_results(LISTING_EN) == 11681)
-    ok &= check("a search page's own query is read from the payload, not a heading",
-                search_header(SEARCH_EN) in (None, "rolex"))
+    # The site states its own page count, and it is not the same number on
+    # every vertical — a hardcoded 25 a page would have been wrong for
+    # property by 40%.
+    motors_html = fx("motors_p1")[0]
+    prop_html = fx("property_rent")[0]
+    ok &= check("motors: the payload's own totals are read back",
+                total_results(motors_html) == FIX["motors_p1"]["expect_total_results"]
+                and total_pages(motors_html, LISTING_URL)
+                == FIX["motors_p1"]["expect_total_pages"])
+    ok &= check("property pages hold 35 ads, motors 25, and both are READ",
+                product_parser.hits_per_page(prop_html) == 35
+                and product_parser.hits_per_page(motors_html) == 25)
+    ok &= check("the catalogue is deeper than the site will address, and that "
+                "is reported rather than swallowed",
+                pages_beyond_cap(motors_html) > 0)
+
+    # Past the end the site EMPTIES rather than clamping — which is a
+    # stronger terminator than "this page added no new sku".
+    end_html, end_url, _ = fx("motors_past_end")
+    ok &= check("one page past the end reports totalHits 0",
+                total_results(end_html) == 0)
+    ok &= check("and is_no_results says so from the payload, in any language",
+                product_parser.is_no_results(end_html))
+    ok &= check("total_pages never returns 0 for a caller about to divide by it",
+                total_pages(end_html, end_url) == 1)
+
+    ok &= check("page 1's own next-link agrees with the convention, which is "
+                "what makes the pages independently addressable",
+                page_flow.pagination_is_addressable(
+                    LISTING_URL, "https://uae.dubizzle.com/motors/used-cars/?page=2"))
+    ok &= check("a next-link that carries a cursor would not",
+                not page_flow.pagination_is_addressable(
+                    LISTING_URL, "https://uae.dubizzle.com/motors/used-cars/?cursor=abc"))
+    ok &= check("agreement is checked against EVERY advertised link, not the "
+                "first",
+                page_flow.pagination_agrees(
+                    LISTING_URL, 1, ["/motors/used-cars/bmw/",
+                                     "/motors/used-cars/?page=2"]))
+    ok &= check("a relative link is resolved before being compared",
+                page_flow.pagination_agrees(LISTING_URL, 1,
+                                            "/motors/used-cars/?page=2"))
+    cands = page_flow.next_page_candidates(
+        LISTING_URL, ["/motors/used-cars/?page=2", "/motors/used-cars/?page=40",
+                      "/classified/electronics/televisions/?page=2"])
+    ok &= check("a candidate must be the NEXT page of the SAME listing",
+                cands == [LISTING_URL + "?page=2"])
+    ok &= check("a single href is accepted as well as a list — passing a list "
+                "to urljoin is what took a sibling's first live run down",
+                page_flow.next_page_candidates(LISTING_URL,
+                                               "/motors/used-cars/?page=2")
+                == [LISTING_URL + "?page=2"])
+    ok &= check("and None is accepted too",
+                page_flow.next_page_candidates(LISTING_URL, None)
+                == [LISTING_URL + "?page=2"])
+
+    ok &= check("concurrency is allowed on a listing",
+                page_flow.concurrency_refusal(LISTING_URL) is None)
+    for url, why in ((AD_URL, "one advertisement"), (HUB_URL, "hub page")):
+        refusal = page_flow.concurrency_refusal(url)
+        ok &= check("concurrency is refused for a %s, WITH the reason" % why,
+                    refusal is not None and why.split()[-1] in refusal)
     return ok
 
 
-# ---------------------------------------------------------------------------
-# What kind of answer was that?
-# ---------------------------------------------------------------------------
 def test_page_state():
-    group("classification: ordered by what each signal proves")
+    group("classification: ordered by what each signal proves, not by cost")
     ok = True
-    ok &= check("a listing with lots is content",
-                detect_page_state(LISTING_EN, 200, CAT_URL) == "content")
-    ok &= check("a lot page is content",
-                detect_page_state(LOT_CLOSED, 200, LOT_URL) == "content")
-    ok &= check("an auction page is content",
-                detect_page_state(AUCTION_EN, 200, AUCTION_URL) == "content")
-    ok &= check("the auctions index is content on its own links",
-                detect_page_state(AUCTIONS_INDEX, 200, AUCTIONS_URL) == "content")
+    for name in FIX:
+        html, url, status = fx(name)
+        ok &= check("%s classifies as %s" % (name, FIX[name]["expect_state"]),
+                    detect_page_state(html, status, url) == FIX[name]["expect_state"])
 
-    # The trap: a search that matches nothing answers 200, prints "No
-    # results", AND backfills the grid with 24 suggested lots reported as
-    # `total: 24`. A parser that trusts the count returns two dozen
-    # plausible, well-formed rows for a query that matched nothing.
-    ok &= check("a no-results search is EMPTY, not content",
-                detect_page_state(SEARCH_NO_RESULTS, 200, SEARCH_URL) == "empty")
-    ok &= check("...and the signal is the payload's own flag, not a phrase",
-                is_no_results(SEARCH_NO_RESULTS) and not is_no_results(SEARCH_EN))
-    ok &= check("...and page_flow refuses to parse that state",
+    block_html = fx("block_pardon")[0]
+    ok &= check("the 'Pardon Our Interruption' refusal is blocked AT HTTP 200 "
+                "— on this site the status code is not the signal",
+                detect_page_state(block_html, 200, LISTING_URL) == "blocked")
+    ok &= check("neither refusal is built out of dubizzle's own assets",
+                not served_by_dubizzle(block_html)
+                and not served_by_dubizzle(fx("block_iframe")[0]))
+    ok &= check("every page the site served IS",
+                all(served_by_dubizzle(fx(n)[0])
+                    for n in ("motors_p1", "property_rent", "classified",
+                              "jobs", "community", "hub_home", "not_found")))
+
+    # §18's inverted-detection case: Chromium's own network-error page carries
+    # the site's hostname in its <title> and no vendor marker of any kind.
+    chromium_error = (
+        '<html><head><title>www.dubizzle.com</title></head><body>'
+        '<div class="error-code">ERR_PROXY_CONNECTION_FAILED</div>'
+        '<div>This site can’t be reached</div></body></html>')
+    ok &= check("Chromium's own error page is blocked, though its title is "
+                "the site's hostname and it carries no vendor marker",
+                detect_page_state(chromium_error, None, LISTING_URL) == "blocked")
+    ok &= check("and no marker list would have caught it — only the assets do",
+                detect_block_marker(chromium_error) is None)
+
+    # §18's other rule: a marker that matches a good page is worse than none.
+    served = fx("motors_p1")[0]
+    ok &= check("_Incapsula_Resource appears on pages the site SERVED, so it "
+                "is not on its own a challenge marker",
+                detect_bot_challenge(served) is None)
+    ok &= check("and the vendor's own refusal resource IS one",
+                detect_bot_challenge(
+                    '<script src="/_Incapsula_Resource?SWCGHOEL=v2"></script>')
+                is not None)
+
+    # The extension trap (§8), and here the guard is NOT dead code: this
+    # marker set contains exactly what the auto-solve extension injects.
+    ok &= check("a Scraping Browser extension's own hunters are not mistaken "
+                "for the site's challenge",
+                detect_bot_challenge(served + EXTENSION_TAGS) is None)
+    ok &= check("but the same markers in a NON-extension script still count",
+                detect_bot_challenge(
+                    served + '<script src="https://www.google.com/recaptcha/'
+                             'api2/anchor?k=x"></script>') is not None)
+
+    # A page past the end still renders one ad, so `empty` must not be parsed.
+    end_html, end_url, _ = fx("motors_past_end")
+    ok &= check("a page past the end classifies as empty",
+                detect_page_state(end_html, 200, end_url) == "empty")
+    ok &= check("and it really does still carry a fully-formed ad — which is "
+                "why the policy does not parse it",
+                len(parse_products(end_html, end_url)) == 1)
+    ok &= check("the policy does not parse it",
                 not page_flow.should_parse("empty"))
+    ok &= check("nor does it count as blocked, nor spend a solve",
+                not page_flow.counts_as_blocked("empty")
+                and not page_flow.should_solve("empty"))
 
-    ok &= check("the real 403 refusal is blocked",
-                detect_page_state(BLOCKED_403, 403, CAT_URL) == "blocked")
-    ok &= check("its marker is a refusal marker, not a challenge",
-                detect_block_marker(BLOCKED_403)
-                and detect_bot_challenge(BLOCKED_403) is None)
-    ok &= check("a 403 on an otherwise fine page is still blocked",
-                detect_page_state("<html></html>", 403, CAT_URL) == "blocked")
-    ok &= check("no response at all reports blocked rather than raising",
-                page_flow.classify(None, None, CAT_URL) == "blocked")
-
-    # Positive detection, inverted: the refusal carries no vendor name and
-    # Chromium's own error page carries the site's hostname in its title.
-    ok &= check("a page built from the site's assets is recognised",
-                served_by_catawiki(LISTING_EN))
-    ok &= check("the refusal is not", not served_by_catawiki(BLOCKED_403))
-    chromium_error = ('<html><head><title>www.catawiki.com</title></head>'
-                      '<body><div>ERR_PROXY_CONNECTION_FAILED</div></body></html>')
-    ok &= check("Chromium's own error page, whose TITLE is the site's host, "
-                "is not mistaken for a served page",
-                not served_by_catawiki(chromium_error)
-                and detect_page_state(chromium_error, None, CAT_URL) == "blocked")
-
-    # `akamai` is deliberately not a marker: the string lives in the response
-    # HEADER, not in the body of either page - 0 occurrences in all captures.
-    ok &= check("no marker matches a page the site served",
-                detect_bot_challenge(LISTING_EN) is None
-                and detect_block_marker(LISTING_EN) is None)
-    ok &= check("'akamai' is not in either marker set",
-                not any("akamai" in m.lower()
-                        for m in BLOCK_MARKERS + BOT_CHALLENGE_MARKERS))
-
-    # The Scraping Browser's extension injects its own hunters into every
-    # page it loads. The question is whether OUR markers mistake them for the
-    # site's challenge - measured on a real CDP capture, they do not, which
-    # is why there is no strip guard.
-    with_extension = LISTING_EN.replace("</body>", EXTENSION_TAGS + "</body>")
-    ok &= check("a good page carrying the extension's injected hunters is "
-                "still content",
-                detect_page_state(with_extension, 200, CAT_URL) == "content")
-    ok &= check("...and reports no challenge",
-                detect_bot_challenge(with_extension) is None)
-
-    # Served, from the site's assets, with no payload yet: wants a WAIT, not
-    # a refetch.
-    shell = ('<html><body><img src="https://assets.catawiki.nl/a.jpg">'
-             '<link href="https://assets.catawiki.nl/b.css">'
-             '<article class="c-lot-card__container">'
-             '<p class="c-lot-card__price"></p></article></body></html>')
-    ok &= check("a served page with empty cards is a shell",
-                detect_page_state(shell, 200, CAT_URL) == "shell")
-    ok &= check("...which page_flow calls unpainted rather than blocked",
-                page_flow.is_unpainted("shell", shell)
-                and not page_flow.should_retry("shell"))
+    ok &= check("a hub URL is empty, not a shell that will never paint",
+                detect_page_state(fx("hub_home")[0], 200, HUB_URL) == "empty")
+    ok &= check("a served page with a grid on the way is a shell",
+                detect_page_state(
+                    '<html><head><link href="https://static.dubizzle.com/a.css">'
+                    '<link href="https://static.dubizzle.com/b.css"></head>'
+                    '<body></body></html>', 200, LISTING_URL) == "shell")
+    ok &= check("a shell wants the wait, not another fetch",
+                page_flow.should_parse("shell") and not page_flow.should_retry("shell"))
+    ok &= check("no body at all is blocked rather than a crash",
+                detect_page_state(None, None, LISTING_URL) == "blocked")
     return ok
 
 
@@ -708,7 +722,8 @@ def test_page_flow():
                 page_flow.should_parse("content")
                 and not page_flow.should_retry("content")
                 and not page_flow.should_solve("content"))
-    ok &= check("empty is NOT parsed on this site (the 24 suggestions)",
+    ok &= check("empty is NOT parsed here — a page past the end still renders "
+                "one Car of the Week",
                 not page_flow.should_parse("empty")
                 and not page_flow.counts_as_blocked("empty"))
     ok &= check("blocked counts as blocked and never asks for a solve",
@@ -721,93 +736,96 @@ def test_page_flow():
                 not page_flow.should_parse("nonsense")
                 and page_flow.counts_as_blocked("nonsense"))
 
-    # Rotating an exit does not clear a block here: a headless browser was
-    # refused from four residential exits and one datacentre address, while a
-    # headful one was served from the same addresses. The budget is 0 on
-    # purpose, and the engines read these constants rather than computing
-    # their own.
-    ok &= check("RETRY_ON_BLOCKED is False, against True in the siblings",
-                page_flow.RETRY_ON_BLOCKED is False)
-    ok &= check("and the block-retry budgets are 0",
-                page_flow.BLOCK_RETRIES_WITHOUT_POOL == 0
-                and page_flow.BLOCK_RETRIES_WITH_POOL == 0)
-    advice = page_flow.block_advice(BLOCKED_403, headless=True, has_pool=False)
-    ok &= check("the block advice names the real cause (headless), not the proxy",
-                "HEADLESS" in advice and "--headful" in advice)
+    # On THIS site the exit's country is the discriminator — the opposite of
+    # a sibling repo, where the client mattered and the address did not. So
+    # the retry budget is spent rather than saved, and the engines read these
+    # constants rather than computing their own (a policy constant nothing
+    # consults is the same defect as dead code, §17).
+    ok &= check("RETRY_ON_BLOCKED is True here: rotating the exit DOES help",
+                page_flow.RETRY_ON_BLOCKED is True)
+    ok &= check("and the block-retry budgets are non-zero",
+                page_flow.BLOCK_RETRIES_WITHOUT_POOL >= 1
+                and page_flow.BLOCK_RETRIES_WITH_POOL
+                >= page_flow.BLOCK_RETRIES_WITHOUT_POOL)
+    for engine in ENGINE_FILES:
+        src = open(os.path.join(REPO_ROOT, engine), encoding="utf-8").read()
+        ok &= check("%s reads the shared block budget rather than its own"
+                    % engine,
+                    "BLOCK_RETRIES_WITHOUT_POOL" in src
+                    and "BLOCK_RETRIES_WITH_POOL" in src)
+    advice = page_flow.block_advice(fx("block_pardon")[0], headless=True,
+                                    has_pool=False)
+    ok &= check("the block advice names the real cause — the exit's COUNTRY",
+                "UAE" in advice and "country-ae" in advice)
+    ok &= check("and does not blame headless, which is not the cause here",
+                "--headful" not in advice)
 
-    # Readiness is a POPULATED price node, not a card count: the server sends
-    # 24 card shells with 24 empty price nodes, so a count-based wait is
-    # satisfied instantly while every price is still blank.
-    ok &= check("the readiness anchor requires content in the node",
-                ":not(:empty)" in page_flow.ready_selector("listing"))
-    ok &= check("the threshold is above 1", page_flow.MIN_CARD_MATCHES > 1)
+    # Readiness: a price node, above 1 match, and sized to the page.
+    ok &= check("the readiness anchor is a price node",
+                "listing-price" in page_flow.ready_selector("listing"))
+    ok &= check("the threshold is above 1 — waiting for a single match "
+                "resolves on an unrelated node", page_flow.MIN_CARD_MATCHES > 1)
     ok &= check("a short last page lowers the threshold instead of timing out",
                 page_flow.min_matches("listing", 5) == 5
-                and page_flow.min_matches("listing", 24) == page_flow.MIN_CARD_MATCHES)
-    ok &= check("expected_lots reads the payload", page_flow.expected_lots(LISTING_EN) == 3)
+                and page_flow.min_matches("listing", 35)
+                == page_flow.MIN_CARD_MATCHES)
+    ok &= check("...but never below 2", page_flow.min_matches("listing", 1) == 2)
+    ok &= check("expected_cards reads the payload, before anything hydrates",
+                page_flow.expected_cards(fx("motors_p1")[0])
+                == FIX["motors_p1"]["expect_rows"])
 
-    # No scroll subsystem at all, and that is measured: three scrolls added
-    # zero cards on every page kind.
+    # No scroll subsystem at all, and that is measured: the captures taken
+    # with no scrolling carried the same counts as the ones taken with four
+    # scroll rounds.
     ok &= check("page_flow exposes no scroll API",
                 not hasattr(page_flow, "scroll_until_settled")
                 and not hasattr(page_flow, "SCROLL_ROUNDS_MAX"))
 
-    # A poll, not an evaluated string: `wait_for_function` hands the browser
-    # a string, which a CSP without `unsafe-eval` refuses outright. This
-    # site's CSP does allow it today; the poll is what keeps a header change
-    # from taking the run down.
-    calls = 0
+    # A poll, not an evaluated string: `wait_for_function` hands the browser a
+    # STRING, and a site whose CSP lacks `unsafe-eval` refuses it outright —
+    # which took a sibling repo's run down with exit 1 on its most obvious
+    # URL (§18). Counting elements goes through the protocol instead.
+    calls = {"n": 0}
+
     def count(_sel):
-        nonlocal calls
-        calls += 1
-        return 0 if calls < 3 else 9
-    got = page_flow.wait_for_count(count, lambda ms: None, ".x", 8, 5000)
-    ok &= check("wait_for_count polls until the threshold is reached", got == 9)
+        calls["n"] += 1
+        return 0 if calls["n"] < 3 else 9
+
+    ok &= check("wait_for_count polls until the threshold is reached",
+                page_flow.wait_for_count(count, lambda ms: None, ".x", 8, 5000) == 9)
     ok &= check("...and returns the last count when the budget runs out",
                 page_flow.wait_for_count(lambda s: 2, lambda ms: None,
                                          ".x", 8, 500) == 2)
+    ok &= check("...and a driver error during the poll does not take the run "
+                "down",
+                page_flow.wait_for_count(
+                    lambda s: (_ for _ in ()).throw(RuntimeError("driver")),
+                    lambda ms: None, ".x", 8, 500) == 0)
+    for name in ("wait_for_count", "classify"):
+        src = inspect.getsource(getattr(page_flow, name))
+        ok &= check("page_flow.%s hands no JavaScript across the boundary"
+                    % name,
+                    "=>" not in src and "return document" not in src)
 
-    # Pagination candidates: the site's links are RELATIVE, several of its own
-    # pages are advertised at once, and it links to other listings too.
-    ok &= check("a relative link of its own agrees with the convention",
-                page_flow.pagination_agrees(CAT_URL, 1,
-                                            ["/en/c/333-watches?page=2#filters"]))
-    ok &= check("a cursor link does not",
-                not page_flow.pagination_agrees(CAT_URL, 1,
-                                                ["/en/c/333-watches?cursor=abc"]))
-    ok &= check("only the NEXT page number is accepted as a candidate",
-                page_flow.next_page_candidates(
-                    CAT_URL, ["/en/c/333-watches?page=2",
-                              "/en/c/333-watches?page=100"])
-                == [CAT_URL + "?page=2"])
-    ok &= check("another listing's page 2 is dropped",
-                page_flow.next_page_candidates(CAT_URL, ["/en/c/999-other?page=2"])
-                == [CAT_URL + "?page=2"])
-    ok &= check("past the cap there are no candidates, site link or not",
-                page_flow.next_page_candidates(CAT_URL + "?page=100",
-                                               ["/en/c/333-watches?page=101"]) == [])
-    ok &= check("a single string is accepted as well as a list - the shape "
-                "that took the first live run down",
-                page_flow.next_page_candidates(CAT_URL, "/en/c/333-watches?page=2")
-                == [CAT_URL + "?page=2"])
-    ok &= check("the site publishes no link[rel=next], so the selector layer "
-                "is genuinely last",
-                'rel="next"' not in LISTING_EN)
+    # This site DOES publish link[rel=next], so the standards-based layer
+    # leads the selector list rather than being a hopeful last entry.
+    ok &= check("link[rel=next] leads the selector list",
+                page_flow.NEXT_PAGE_SELECTOR.strip().startswith('link[rel="next"]'))
+    ok &= check("and the site really does publish one",
+                'rel="next"' in fx("motors_p1")[0]
+                or 'rel="next"' in FIX["motors_p1"]["html"])
 
-    # Concurrency: refused WITH the reason where there is nothing to fetch.
     ok &= check("a paginated listing has no concurrency limit",
-                page_flow.concurrency_limit(CAT_URL) is None
-                and page_flow.concurrency_refusal(CAT_URL) is None)
-    for url, word in ((LOT_URL, "lot"), (AUCTIONS_URL, "auctions index"),
-                      (AUCTION_URL, "auction")):
+                page_flow.concurrency_limit(LISTING_URL) is None)
+    for url, word in ((AD_URL, "an individual ad"), (HUB_URL, "a hub page")):
         reason = page_flow.concurrency_refusal(url)
         ok &= check("concurrency on %s is refused with a reason" % word,
                     page_flow.concurrency_limit(url) == 1
                     and reason and "nothing to fetch" in reason)
-    ok &= check("pages_at_cap flags a listing deeper than the site addresses",
-                page_flow.pages_at_cap(LISTING_EN)
-                and not page_flow.pages_at_cap(SEARCH_EN))
+    ok &= check("pages_at_cap does not fire on a listing the site addresses "
+                "in full", not page_flow.pages_at_cap(fx("jobs")[0]))
     return ok
+
 
 # ---------------------------------------------------------------------------
 # The output contract
@@ -817,51 +835,60 @@ def test_output_contract():
     ok = True
     names = [f.name for f in fields(Product)]
     # The family prefix, byte-identical and in order, so a consumer written
-    # against another repo in this family reads the first sixteen columns
+    # against another repo in this family reads the first eighteen columns
     # unchanged. Site-specific columns go AFTER it.
     family_prefix = ["source", "scraped_at", "url", "sku", "title", "brand",
                      "price", "currency", "original_price", "discount_pct",
                      "rating", "review_count", "in_stock", "image_url",
-                     "category", "price_source"]
+                     "category", "price_source", "page", "position"]
     ok &= check("the family field prefix is present and in order",
                 names[:len(family_prefix)] == family_prefix)
     ok &= check("this site's own columns come after it, in order",
                 names[len(family_prefix):] ==
-                ["page", "position", "bid_kind", "bid_status_text",
-                 "bid_count", "bid_count_is_floor", "next_min_bid",
-                 "time_left_text", "bidding_start_at", "bidding_end_at",
-                 "reserve_price_set", "reserve_price_met", "sold", "buy_now",
-                 "has_free_shipping", "favorite_count", "subtitle",
-                 "estimate_min", "estimate_max", "auction_id",
-                 "auction_title", "auction_close_at", "auction_status",
-                 "seller_id", "seller_country", "seller_score",
-                 "seller_feedback_count", "listing_kind"])
-    # Three modes, and the third reads a different KIND of thing, so it gets
-    # its own dataclass rather than a Product with most columns null (§9).
-    ok &= check("three modes map to a row class, auctions to its own",
-                ROW_CLASS_BY_MODE == {"listing": Product, "lot": Product,
-                                      "auctions": Auction})
-    ok &= check("the Auction row reuses `sku` for the id, like every other "
-                "schema in the family",
-                "sku" in [f.name for f in fields(Auction)])
-    # A column that is null on every row of every run should not exist (§9).
-    # These four are null on every LISTING row and populated in --mode
-    # product, which is a different thing and is why they are kept — pinned
-    # so that removing them needs a measurement rather than a hunch.
-    # Null on every LISTING row and populated in --mode lot, which is a
-    # different thing and is why they are kept -- pinned so that removing one
-    # needs a measurement rather than a hunch.
-    ok &= check("the lot-only columns are declared",
-                {"bid_count", "bid_count_is_floor", "next_min_bid",
-                 "estimate_min", "estimate_max", "seller_id",
-                 "seller_country", "seller_score", "seller_feedback_count",
-                 "bidding_end_at", "reserve_price_met", "sold"} <= set(names))
-    # Null on every LOT row and populated on a listing: the card's own
-    # relative timer.
-    ok &= check("the listing-only columns are declared too",
-                {"time_left_text", "bid_status_text"} <= set(names))
-    ok &= check("both modes are one row per sku",
-                set(UNIQUE_BY_SKU_MODES) == {"listing", "product"})
+                ["vertical", "listing_id", "listing_uuid", "short_url",
+                 "city", "location", "seller_name", "seller_kind", "seller_id",
+                 "is_verified", "is_premium", "listing_kind", "photos_count",
+                 "posted_at", "bumped_at", "payment_frequency", "bedrooms",
+                 "bathrooms", "size_sqft", "year", "kilometers", "attributes"])
+    # One KIND of thing here, so one dataclass — there is no second row class
+    # to keep in step, and no mode that reads something else (§9).
+    ok &= check("one mode maps to one row class",
+                ROW_CLASS_BY_MODE == {"listing": Product})
+    ok &= check("that mode is one row per sku",
+                set(UNIQUE_BY_SKU_MODES) == {"listing"})
+
+    # §9: a column that is null on every row of every run should not exist.
+    # `rating` and `review_count` ARE null on every row here, and they are
+    # kept only because they are in the family prefix — which is a decision,
+    # so it is written down and pinned rather than left to be rediscovered.
+    every_row = []
+    for name in ("motors_p1", "property_rent", "classified", "jobs", "community"):
+        every_row += fx_rows(name)
+    always_null = {f.name for f in fields(Product)
+                   if all(getattr(r, f.name) is None for r in every_row)}
+    ok &= check("the only always-null columns are the family-prefix ones this "
+                "site does not publish -- rating and review_count, because it "
+                "rates SELLERS and never the ad (measured: 0 of %d rows across "
+                "five verticals)" % len(every_row),
+                always_null <= {"rating", "review_count", "original_price",
+                                "discount_pct", "size_sqft", "bedrooms",
+                                "bathrooms", "year", "kilometers",
+                                "payment_frequency"})
+    ok &= check("rating and review_count really are null on every row",
+                {"rating", "review_count"} <= always_null)
+    # And the per-vertical ones are null only OUTSIDE their vertical, which
+    # is the difference between a sparse column and a dead one.
+    prop = fx_rows("property_rent")
+    motors = fx_rows("motors_p1")
+    ok &= check("bedrooms is populated on property and null on motors",
+                all(r.bedrooms is not None for r in prop)
+                and all(r.bedrooms is None for r in motors))
+    ok &= check("kilometers is populated on motors and null on property",
+                all(r.kilometers is not None for r in motors)
+                and all(r.kilometers is None for r in prop))
+    ok &= check("which is what `vertical` is for",
+                {r.vertical for r in prop} == {"property-for-rent"}
+                and {r.vertical for r in motors} == {"motors"})
 
     ok &= check("the exit codes are the family's",
                 (EXIT_BLOCKED, EXIT_NO_PRODUCTS, EXIT_PARTIAL) == (3, 4, 6))
@@ -1320,12 +1347,11 @@ def test_no_capture_leaks():
     # captures went unexamined while twelve checks reported green. The
     # non-empty assertion underneath is the actual fix: a corpus check that
     # can silently scan nothing is worse than no corpus check at all.
-    names = [k for k, v in sorted(globals().items())
-             if k.endswith("_FIXTURE") and isinstance(v, str)]
-    fixtures = "\n".join(globals()[k] for k in names)
+    names = sorted(FIX)
+    fixtures = "\n".join(FIX[k]["html"] for k in names)
     ok &= check("the privacy checks below have fixtures to scan "
                 "(%d fixtures, %d chars)" % (len(names), len(fixtures)),
-                len(names) >= 3 and len(fixtures) > 30000)
+                len(names) >= 8 and len(fixtures) > 300000)
     # Guarded with PATTERNS rather than with the literals a previous capture
     # happened to contain, so the NEXT capture is checked too. MediaMarkt's
     # pages embed a front-end configuration blob — a Sentry DSN, a Woosmap
@@ -1334,7 +1360,10 @@ def test_no_capture_leaks():
     patterns = {
         "a JWT": r"eyJ[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{10,}",
         "an access token": r"(?:access|auth|bearer)[_\-]?[Tt]oken\"?\s*[:=]\s*\"?[A-Za-z0-9._\-]{12,}",
-        "an API key": r"(?:api|public|secret|private)[_\-]?[Kk]ey\"?\s*[:=]\s*\"?[A-Za-z0-9._\-]{12,}",
+        # The placeholder is exempt by NAME, not by shape: it is 19
+        # characters of the same alphabet a real key uses, so a shape-only
+        # rule flags the very substitution that makes the fixture safe.
+        "an API key": r"(?:api|public|secret|private)[_\-]?[Kk]ey\"?\s*[:=]\s*\"?(?!REDACTED-SEARCH-KEY)[A-Za-z0-9._\-]{12,}",
         "a Sentry DSN": r"https://[0-9a-f]{16,}@[\w.]*ingest",
         "a session id": r"session[_\-]?[Ii]d\"?\s*[:=]\s*\"?[A-Za-z0-9._\-]{8,}",
         "an email address": r"[\w.+-]+@[\w-]+\.[a-z]{2,}",
@@ -1352,13 +1381,13 @@ def test_no_capture_leaks():
     # grep. Matched as PATTERNS rather than as the values one capture
     # happened to hold, so the NEXT capture is checked too.
     site_session = {
-        "a click-tracking key": r"click_key=(?!PLACEHOLDER)[A-Za-z0-9%.-]{12,}",
-        "a click checksum": r"click_sum=(?!PLACEHOLDER)[A-Za-z0-9]{6,}",
-        "an impression logging key":
-            r'data-logging-key="(?!PLACEHOLDER)[A-Za-z0-9:-]{12,}"',
-        "a content-source token":
-            r"content_source=(?!PLACEHOLDER)[A-Za-z0-9%.-]{12,}",
-        "a DataDome session blob": r"'(?:cid|hsh|e|cookie)':'(?!PLACEHOLDER)[^']{16,}'",
+        "a real estate agent's own name":
+            r'"agent_profile"\s*:\s*\{(?:[^{}]|\{[^{}]*\})*?"name"\s*:\s*'
+            r'\{"en"\s*:\s*"(?!AGENT NAME REMOVED)[^"]+"',
+        "a per-seller UUID":
+            r'"user"\s*:\s*\{"id"\s*:\s*"(?!00000000-)[0-9a-f-]{36}"',
+        "the page's Algolia search key":
+            r'"x-algolia-api-key"\s*:\s*"(?!REDACTED-SEARCH-KEY")[^"]{8,}"',
     }
     for label, pattern in site_session.items():
         hits = re.findall(pattern, fixtures)
@@ -1778,36 +1807,44 @@ def test_sample_output():
     ok &= check("the sample carries no fabrication markers",
                 not re.search(r"example\.com|lorem ipsum|FIXME|TODO|XXXX",
                               text, re.IGNORECASE))
-    ok &= check("every sample row's sku is the site's own numeric lot id",
-                all(re.fullmatch(r"\d{6,}", r.get("sku") or "") for r in rows))
+    ok &= check("every sample row's sku is a listing PATH, as this schema "
+                "defines it",
+                all((r.get("sku") or "").startswith("/") for r in rows))
     ok &= check("every sample row names the storefront it came from",
-                all((r.get("source") or "") in ("catawiki.com",) + HOSTS
+                all((r.get("source") or "") in ("dubizzle.com",) + HOSTS
                     for r in rows))
-    ok &= check("every sample row's URL is a lot on the storefront",
-                all(re.match(r"https://www\.catawiki\.com/[A-Za-z-]{2,7}/l/\d+",
-                             r.get("url") or "") for r in rows))
+    ok &= check("every sample row's URL is an ad on an emirate subdomain — "
+                "the address the site itself publishes, not one rebuilt from "
+                "the browse host",
+                all(re.match(r"https://[a-z]+\.dubizzle\.com/", r.get("url") or "")
+                    and "uae.dubizzle.com" not in (r.get("url") or "")
+                    for r in rows))
     ok &= check("no sample URL carries a tracking tail",
                 not [r for r in rows if "utm_" in (r.get("url") or "")])
-    # A sample cut from ONE mode would hide half the schema: a listing row
-    # has the card's relative timer and no seller, a lot row has the seller,
-    # the estimate and both absolute times and no timer at all. So the sample
-    # spans them, or a reader judges the output by its sparsest rows alone.
-    ok &= check("the sample spans both modes",
-                any(r.get("listing_kind") == "lot" for r in rows)
-                and any(r.get("listing_kind") in ("category", "search",
-                                                  "auction") for r in rows))
-    ok &= check("the sample shows a lot row's seller and estimate",
-                any(r.get("seller_id") and r.get("estimate_min") for r in rows))
-    ok &= check("the sample shows the bid kinds it can carry",
-                {r.get("bid_kind") for r in rows} & {"current", "final",
-                                                     "starting"})
-    # The invariant, in the shipped sample too: a null price is a reserve lot.
-    ok &= check("no sample row has a null price without its reserve flag",
-                all(r.get("reserve_price_set")
-                    for r in rows if r.get("price") is None))
+    # A sample of organic rows alone would hide the promoted slot, which is
+    # the one row a consumer most needs to be able to recognise: it repeats
+    # on every page of a run and is not a result.
+    ok &= check("the sample shows both kinds of row it can produce",
+                {r.get("listing_kind") for r in rows}
+                == {"organic", "car_of_the_week"})
+    ok &= check("the sample shows what the JSON-LD enrichment adds",
+                any(r.get("brand") for r in rows))
+    ok &= check("and what only the payload has",
+                all(r.get("listing_id") and r.get("attributes") for r in rows))
+    ok &= check("every priced sample row carries its currency, and no "
+                "unpriced row carries one",
+                all((r.get("price") is None) == (r.get("currency") is None)
+                    for r in rows))
+    ok &= check("no sample row has an original_price at or below its price",
+                not [r for r in rows
+                     if r.get("original_price") is not None
+                     and r.get("price") is not None
+                     and r["original_price"] <= r["price"]])
     ok &= check("the sample shows a real price_source",
                 {r.get("price_source") for r in rows}
-                <= {"next_data+dom", "next_data", "dom"}
+                <= {"next_data+jsonld", "next_data", "dom",
+                    "next_data+jsonld:no-price", "next_data:no-price",
+                    "dom:no-price"}
                 and any(r.get("price_source") for r in rows))
 
     csv_path = os.path.join(REPO_ROOT, "sample_output.csv")
@@ -1841,7 +1878,7 @@ def test_captcha():
                                     'class="g-recaptcha"></div>',
                                     "https://www.catawiki.com/") is None)
     ok &= check("a page with no reCAPTCHA at all is not a challenge",
-                detect_recaptcha_v3(SEARCH_EN, SEARCH_URL) is None)
+                detect_recaptcha_v3(fx("motors_p1")[0], LISTING_URL) is None)
 
     # THE LOADER WINS. A site's own wrapper can declare v3 while the Google
     # loader it actually ships is the v2-invisible signature
@@ -1889,8 +1926,39 @@ def test_captcha():
     # Pinned in both directions so a broadening edit is a decision.
     markers = {m.lower() for m in product_parser.BOT_CHALLENGE_MARKERS}
     ok &= check("detection covers the shapes a challenge here would take",
-                {"recaptcha/api2/anchor", "recaptcha/api.js", "data-sitekey",
+                {"recaptcha/api2/anchor", "recaptcha/api2/bframe",
+                 "recaptcha/api.js", "data-sitekey",
                  "hcaptcha.com/captcha"} <= markers)
+    # The other half of the question §18 asks: "did we meet a challenge" and
+    # "is one configured, and would we recognise it" are different, and here
+    # the answers are no and yes. This site ships its own captcha mount point
+    # EMPTY on every page it serves — `<captcha-widgets></captcha-widgets>`,
+    # 1 occurrence on all 15 captures, good pages included — so a bare tag
+    # marker would make every page a challenge. What a rendered challenge
+    # looks like is the same element with something INSIDE it, which is a
+    # structural question and is asked by a function.
+    ok &= check("the bare <captcha-widgets> tag is NOT a marker — it is on "
+                "every good page",
+                not any("captcha-widgets" in m for m in markers))
+    ok &= check("an EMPTY mount point is not a challenge",
+                not product_parser.captcha_mount_is_populated(
+                    "<captcha-widgets></captcha-widgets>"))
+    ok &= check("a POPULATED one is",
+                product_parser.captcha_mount_is_populated(
+                    '<captcha-widgets><div data-sitekey="6Le"></div>'
+                    '</captcha-widgets>'))
+    ok &= check("and no page dubizzle served carries a populated one",
+                not any(product_parser.captcha_mount_is_populated(fx(n)[0])
+                        for n in ("motors_p1", "property_rent", "classified",
+                                  "jobs", "community")))
+    # The extension's own hunters reference turnstile, arkoselabs and
+    # recaptcha on EVERY page fetched over --cdp-endpoint: 3, 2 and 2
+    # occurrences on a good motors page, and 0 of each after the extension
+    # <script> tags are stripped. This guard is load-bearing here, unlike in
+    # two sibling repos where the same code would be dead (§8).
+    ok &= check("stripping extension scripts removes every one of their "
+                "markers from a good page",
+                product_parser.detect_bot_challenge(fx("motors_p1")[0]) is None)
     # `cf-turnstile` is specifically EXCLUDED as a bare marker: the Scraping
     # Browser's auto-solve extension injects a turnstile hunter into every
     # page it loads, so a bare match would fire on good pages fetched over
@@ -1936,8 +2004,8 @@ def test_env_config():
     ok = True
     ok &= check("the env keys are this site's, not another repo's",
                 set(env_config.ENV_KEYS) ==
-                {"TWOCAPTCHA_KEY", "CATAWIKI_CDP_ENDPOINT",
-                 "CATAWIKI_PROXY", "CATAWIKI_URL"})
+                {"TWOCAPTCHA_KEY", "DUBIZZLE_CDP_ENDPOINT",
+                 "DUBIZZLE_PROXY", "DUBIZZLE_URL"})
 
     # .env.example must document exactly the variables the code reads, in
     # both directions. It drifts otherwise, and a documented-but-unread
@@ -2249,34 +2317,39 @@ def test_engines(skips):
                     % name, "page_flow.block_advice" in src)
         ok &= check("%s reports the pages beyond the site's own cap" % name,
                     "parser_page_cap" in src and "deeper than the site will" in src)
-        ok &= check("%s passes the page's own lot count to the readiness "
+        ok &= check("%s passes the page's own ad count to the readiness "
                     "threshold, so a short last page does not time out" % name,
-                    "page_flow.expected_lots" in src)
+                    "page_flow.expected_cards" in src)
         ok &= check("%s waits for an unpainted page instead of retrying it"
                     % name, "page_flow.is_unpainted" in src)
         # Credentials never reach a log, in any engine.
         ok &= check("%s masks credentials globally, not just once" % name,
                     "pass@" not in mod._mask_credentials(
                         "a ws://user:pass@h:1/ b ws://user:pass@h:1/"))
-        ok &= check("%s refuses a host that is not Catawiki" % name,
+        ok &= check("%s refuses a host it does not read, with the reason" % name,
                     "is_supported_host" in src)
         # The same modes in every engine — a mode one engine offers and
         # another does not is the drift page_flow.py and finish_run() exist
-        # to prevent, one level up. There are exactly two here, and no shop
-        # mode: a seller's own page is a different application shell whose
-        # markup has not been measured, and a mode that ships untested is
-        # worse than one that is absent.
-        ok &= check("%s offers exactly listing, lot and auctions" % name,
-                    '"listing", "lot", "auctions"]' in src)
-        ok &= check("%s has no shop mode" % name, '"shop"' not in src)
+        # to prevent, one level up. There is exactly ONE here: an individual
+        # ad's markup has not been measured, and a mode that ships untested
+        # is worse than one that is absent.
+        ok &= check("%s offers exactly one mode, listing" % name,
+                    'choices=["listing"]' in src)
+        ok &= check("%s has no unmeasured detail mode" % name,
+                    '"product"]' not in src and '"lot"]' not in src)
         # HEADFUL is the default here, against headless in every sibling: a
         # headless browser is refused with HTTP 403 from every address tried,
         # residential included, while a real window is served from the same
         # ones. A --headless default would be a scraper whose default cannot
         # fetch the site.
-        ok &= check("%s defaults to headful" % name,
-                    'dest="headless", action="store_false",' in src
-                    and "default=False" in src)
+        # HEADLESS is the default, as in the rest of the family: every live
+        # run of this repo was headless and was served. What was refused was
+        # a non-UAE address, headful and headless alike — the discriminator
+        # here is the exit's country, not the window.
+        ok &= check("%s defaults to headless, like the rest of the family"
+                    % name,
+                    'dest="headless", action="store_true",' in src
+                    and "default=True" in src)
 
     # THE FLAG CONTRACT, and the exact ways the engines differ from it.
     #
@@ -2429,7 +2502,7 @@ def test_engines(skips):
     ok &= check("page_flow.classify works with no status, as two engines "
                 "call it",
                 page_flow.classify("<html>x</html>",
-                                   url=SEARCH_URL) in STATE_POLICY_NAMES)
+                                   url=LISTING_URL) in STATE_POLICY_NAMES)
 
     # For "it must pass with no engine installed" to mean anything, each
     # engine has to import its driver at MODULE level — otherwise the module
@@ -2523,12 +2596,10 @@ def main() -> int:
     skips = []
 
     ok &= test_price_parsing()
-    ok &= test_bid_state()
     ok &= test_listing_values()
-    ok &= test_reserve_invariant()
-    ok &= test_lot_page()
-    ok &= test_auction_page_is_a_listing()
-    ok &= test_auctions_index()
+    ok &= test_null_price_is_the_site_and_not_the_parser()
+    ok &= test_jsonld_enrichment()
+    ok &= test_dom_fallback_agrees_with_the_payload()
     ok &= test_urls()
     ok &= test_pagination()
     ok &= test_page_state()

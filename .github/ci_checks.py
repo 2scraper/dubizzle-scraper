@@ -78,19 +78,37 @@ CREDENTIAL_ALLOWED = (
 )
 
 # A 2captcha API key is a 32-character hex string.
-HEX32 = re.compile(r"\b[0-9a-f]{32}\b")
-# Contexts in which a 32-hex string is plainly not a key.
 #
-# Deliberately WITHOUT this site's asset hosts, unlike a sibling repo that
-# needed them: dubizzle serves its images under dashed UUIDs
-# (`95be01d1-5c40-4126-94fa-...`), which never match a bare 32-hex run, so
-# the committed fixtures carry none and an allowlist entry for them would be
-# dead configuration that reads like enforcement. Verified by running this
-# check against the fixtures: 0 matches. Kept as a CONTEXT allowlist rather
-# than by loosening the pattern -- a bare 32-hex string anywhere else still
-# fails, which is the point.
+# So is this site's own ad identifier, and it is PUBLIC: every listing URL
+# dubizzle publishes ends in `---{32 hex}`, and the committed fixtures,
+# sample output and documentation are full of them by design. A pattern that
+# cannot tell the two apart fails on its own repository on day one — which is
+# how a check stops being read (§17) — so the ad-id shape is subtracted from
+# the text BEFORE the scan rather than added to a context allowlist. A bare
+# 32-hex string anywhere else still fails, which is the point.
+HEX32 = re.compile(r"\b[0-9a-f]{32}\b")
+AD_ID_IN_URL = re.compile(r"---[0-9a-f]{32}\b")
+# Contexts in which a 32-hex string is plainly not a key.
 HEX32_ALLOWED = ("sha", "hash", "nonce", "example", "md5", "digest",
                  "checksum")
+
+# History findings that have been LOOKED AT and cleared, each with its
+# reason. This exists because the history scan is a pre-publication gate: a
+# later commit cannot reach what a published tag and a merged PR's refs
+# already hold, so the decision has to be made once, before the repo goes
+# public — and a decision that is not written down gets made again by the
+# next person, differently.
+#
+# An entry here is a claim that someone read the blob. Anything not listed
+# still fails.
+HISTORY_DECIDED = {
+    # The legacy README's JSON example, from the pre-rewrite repo (commit
+    # "Add files via upload", 2026-04-14). It is a dubizzle LISTING id — the
+    # same value the site publishes at the end of that ad's own URL — not a
+    # credential. No key has ever been in this repository.
+    "66966b05b2b746e48835c2b9791ecf7e":
+        "a dubizzle listing id in the legacy README's JSON example, not a key",
+}
 
 SCANNED_SUFFIXES = (".py", ".md", ".txt", ".yml", ".yaml", ".example")
 
@@ -184,8 +202,15 @@ def secret_check():
                 failed.append(f"{rel}:{lineno} looks like a URL with real "
                               f"credentials in it")
 
-            for match in HEX32.findall(line):
+            for match in HEX32.findall(AD_ID_IN_URL.sub("---AD-ID", line)):
                 if any(token in line.lower() for token in HEX32_ALLOWED):
+                    continue
+                # A value already decided for the history scan is decided
+                # here too — and this branch is not hypothetical: writing
+                # HISTORY_DECIDED down put one of those strings into the
+                # working tree, so without it this check failed on the very
+                # file that records the decision.
+                if match in HISTORY_DECIDED:
                     continue
                 failed.append(f"{rel}:{lineno} contains {match[:6]}… — a "
                               f"32-char hex string, the shape of a 2captcha key")
@@ -228,7 +253,7 @@ def history_check():
         if parts:
             objects.append((parts[0], parts[1] if len(parts) > 1 else ""))
 
-    failed, scanned = [], 0
+    failed, decided, scanned = [], [], 0
     for sha, path in objects:
         if not (path.endswith(SCANNED_SUFFIXES) or path in ("Dockerfile",)):
             continue
@@ -245,11 +270,17 @@ def history_check():
                     token in line for token in CREDENTIAL_ALLOWED):
                 failed.append(f"{path}:{lineno} (in a past commit) looks like "
                               f"a URL with real credentials in it")
-            for match in HEX32.findall(line):
+            for match in HEX32.findall(AD_ID_IN_URL.sub("---AD-ID", line)):
                 if any(token in line.lower() for token in HEX32_ALLOWED):
+                    continue
+                if match in HISTORY_DECIDED:
+                    decided.append(f"{path}:{lineno} {match[:6]}… — "
+                                   f"{HISTORY_DECIDED[match]}")
                     continue
                 failed.append(f"{path}:{lineno} (in a past commit) contains "
                               f"{match[:6]}… — the shape of a 2captcha key")
+    for note in sorted(set(decided)):
+        print(f"decided  {note}")
 
     if not failed:
         print(f"ok       {scanned} blob(s) across {len(objects)} object(s) "

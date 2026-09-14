@@ -1560,13 +1560,18 @@ def parse_args():
     p.add_argument("--proxy-shuffle", action="store_true",
                    help="Shuffle the pool at startup, so concurrent runs do not "
                         "all begin on the first exit in the file.")
-    p.add_argument("--proxy-block-retries", type=int, default=2,
-                   help="When a page comes back refused (HTTP 403) or behind "
-                        "a captcha, retry it from this many OTHER exits before "
-                        "giving up (default 2). Needs a pool of more than one; "
-                        "ignored otherwise. This is the flag that matters most "
-                        "on this site: the refusal is a property of the "
-                        "ADDRESS, and a different exit is what clears it.")
+    p.add_argument("--proxy-block-retries", type=int,
+                   default=page_flow.BLOCK_RETRIES_WITH_POOL,
+                   help="When a page comes back refused, retry it from this "
+                        "many OTHER exits before giving up (default %d, from "
+                        "page_flow.BLOCK_RETRIES_WITH_POOL — the site's "
+                        "measured policy lives there rather than in three "
+                        "copies of a literal). Needs a pool of more than one; "
+                        "ignored otherwise. This is the flag that matters "
+                        "most on this site: the refusal is a property of the "
+                        "ADDRESS and specifically of its country, and a "
+                        "different UAE exit is what clears it."
+                        % page_flow.BLOCK_RETRIES_WITH_POOL)
     p.add_argument("--twocaptcha-key", default=None, help="2captcha.com API key")
     p.add_argument("--allow-empty", action="store_true",
                    help="Write output files even when 0 rows were found. Off by "
@@ -1632,16 +1637,22 @@ def parse_args():
     # datacentre address, against 200 and the full catalogue from those very
     # same addresses with a real window. A --headless default would be a
     # scraper whose default cannot fetch the site.
+    # HEADLESS is the default, as in the rest of the family, and the
+    # measurement behind that is about the EXIT rather than the window: every
+    # live run of this repo was headless and was served the full catalogue —
+    # 52 rows over two motors pages and 50 over two classified pages, through
+    # a UAE residential exit. What was refused was a non-UAE address, headful
+    # and headless alike. A local headless browser on a UAE exit has not been
+    # tried here, so nothing is claimed about it.
     p.add_argument("--headful", dest="headless", action="store_false",
-                   default=False,
-                   help="Run with a real browser window. THE DEFAULT here, "
-                        "because this site refuses a headless browser "
-                        "regardless of the proxy - see README.")
+                   help="Run with a real browser window. Useful for watching "
+                        "a run or for solving a challenge by hand; it is not "
+                        "what gets you past this site's refusal, which is "
+                        "about the exit's country.")
     p.add_argument("--headless", dest="headless", action="store_true",
-                   help="Run headless. Measured to be refused with HTTP 403 "
-                        "from every address tried, residential included. Kept "
-                        "because --cdp-endpoint ignores it and because a "
-                        "change on the site would make it work again.")
+                   default=True,
+                   help="Run headless. THE DEFAULT. Ignored with "
+                        "--cdp-endpoint, where the remote browser decides.")
     args = p.parse_args()
     # Fill --twocaptcha-key / --cdp-endpoint / --proxy / --url from the
     # environment or .env when the flag was not given. An explicit flag wins.
