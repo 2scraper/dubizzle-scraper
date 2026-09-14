@@ -37,228 +37,242 @@ from datetime import datetime, timezone
 from typing import Optional, List, Set, Sequence, Any, Type
 
 
-# The hostname a row came from. dubizzle is ONE storefront — 18 locales as a
-# path prefix on one host — measured by
-# fetching the same URL from an Indonesian and a US exit and getting
-# identical markup, identical `<html lang="id">` and identical IDR prices —
-# so this column is `dubizzle.com` on every row of every run. It is kept
-# because the family's schema has it in this position and consumers read the
-# columns by name across repos.
+# The hostname a row came from. dubizzle's UAE platform is ONE storefront
+# reached through several hostnames — the aggregate `uae.dubizzle.com` a
+# listing is browsed on, and the eight emirate subdomains
+# (`dubai.`, `abudhabi.`, `sharjah.`, `ajman.`, `rak.`, `uaq.`, `fujairah.`,
+# `alain.`) every individual listing URL is published under. They serve one
+# catalogue with one currency, so this column is `dubizzle.com` on every row
+# of every run rather than the hostname of the moment; the emirate a listing
+# sits in is a fact about the AD and is carried in `city`.
+#
+# It is kept in this position because the family's schema has it here and
+# consumers read the columns by name across repos.
 SOURCE_DEFAULT = "dubizzle.com"
 
 
 @dataclass
 class Product:
-    source: str = SOURCE_DEFAULT
-    scraped_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    url: str = ""
-    # The product's `/{shop-slug}/{product-slug}` path, and NOT the 19-digit
-    # tail most slugs end in.
-    #
-    # That tail is tempting and wrong. The site's own id for this product is
-    # `pdpBasicInfo.productID` in a detail page's Apollo cache —
-    # 103490518624 where the URL tail is 1731177319241910164 — and 4 of 40
-    # listing URLs carry no tail at all (two carry a short hex suffix
-    # instead), all four ordinary organic products with identical markup. So
-    # a tail-derived sku would have been a different number than the site's,
-    # null on a tenth of every run, and nobody would have noticed either.
-    #
-    # The path is always present, is what the site's own canonical uses, and
-    # is what a listing row and a detail row join on. `product_id` below
-    # carries the real numeric id where a page states it.
-    sku: Optional[str] = None
-    title: Optional[str] = None
-    # The SHOP. On a marketplace of small sellers the shop IS the brand, and
-    # A listing publishes no manufacturer field anywhere, so this column
-    # carries the seller's display name instead of being null on every row.
-    # Read from the tile on a search page (95/95), from the badge image's alt
-    # on a category tile, and from `pdpBasicInfo.shopName` on a detail page;
-    # falls back to the slug in the URL, which names the same seller.
-    brand: Optional[str] = None
-    price: Optional[float] = None
-    # IDR, and on this site that is a fact rather than a guess: one
-    # storefront, one currency, and the two exit countries tested returned
-    # zero price differences across the 68 products both saw. Still null
-    # rather than defaulted when no price was found — a row with no price has
-    # no currency either.
-    currency: Optional[str] = None
-    # The was-price, from the tile's strike node. 88 of 95 search tiles carry
-    # one; a CATEGORY tile carries none at all (0 of 60), which is a property
-    # of that page kind and not a parsing failure. Null in --mode product: a
-    # detail page has no strikethrough of its own and the "similar products"
-    # carousel's strikes belong to other products.
-    original_price: Optional[float] = None
-    # Computed from the two prices, never read off the printed badge.
-    # A sibling site only prints its badge above some threshold — two tiles carry
-    # a strike at 7% and 8% off with no badge — so computing recovers 88 rows
-    # where reading recovers 86, and where both exist they agreed on all 86.
-    discount_pct: Optional[float] = None
-    # A per-item rating, which this site does not publish at all — worth
-    # stating because a sibling repo's tile stars are the SHOP's, and folding
-    # the two together would make one column mean different things per site.
-    # 95/95 on a search page, 0/60 on a category page (that tile kind prints
-    # none at all), and `pdpBasicInfo.stats.rating` on a detail page.
-    rating: Optional[float] = None
-    # Null on every listing row and populated in --mode product, from
-    # `stats.countReview`. A tile prints the sold count, never the review
-    # count.
-    review_count: Optional[int] = None
-    # Only a detail page says: `status == "ACTIVE"` with a non-zero
-    # `maxOrder`. A tile does not state availability at all, so this is null
-    # on a listing run rather than assumed true.
-    in_stock: Optional[bool] = None
-    # Sparse ON PURPOSE, and this is the trap on this site.
-    #
-    # A sibling site lazy-loads its tile images, so a tile below the fold carries a
-    # PLACEHOLDER in `src`: 55 of 95 search tiles held an SVG under
-    # `/zeus_v2/` and 30 of 60 category tiles held a `data:` URI. Reading
-    # `src` blindly gives a column that is 100% populated and half wrong, so
-    # a real image is recognised positively by its host and everything else
-    # is null. Scroll further and more rows fill in.
-    image_url: Optional[str] = None
-    category: Optional[str] = None
-    # Where `price` came from:
-    #   "dom"          the rendered tile. The ONLY case on a listing page —
-    #                  there is no structured data on one to confirm against,
-    #                  which is measured rather than assumed (0 JSON-LD, 0
-    #                  __NEXT_DATA__, 0 Apollo state on six captures).
-    #   "meta+apollo"  --mode product: the price from the page's own
-    #                  `product:price:amount` meta, everything else from its
-    #                  Apollo cache.
-    #   "meta"         --mode product where the Apollo cache was absent.
-    # diff_runs.py reports a price change that comes with a price_source
-    # change as `source_changed`, not `changed`: that says something about
-    # our own two snapshots, not about the site.
-    price_source: Optional[str] = None
+    """One row per LISTING.
 
-    # ---- site-specific, appended so the family prefix stays stable ----
-    # Which listing page this row came from (1-based) and its position in
-    # that page as the site ordered it. Without `page`, `position` is
-    # ambiguous — it restarts at 1 on every page. Both null in --mode
-    # product, where there is no page.
-    page: Optional[int] = None
-    position: Optional[int] = None
-    # The seller's URL slug, from the row's own path. Always present, and
-    # kept beside `brand` because a shop's display name can change and its
-    # slug is what the URL commits to.
-    # ---- dubizzle-specific, appended after the family prefix (§9) ----
-    # WHICH quantity `price` is. Three states share one node on a listing
-    # card and are told apart only by a label in the page's language, which
-    # `product_parser` resolves through the dictionary the page itself ships:
-    #
-    #   current    a live high bid
-    #   final      the last bid on a closed lot -- a hammer price only if it
-    #              also `sold`; one measured lot reached EUR 1,300 with
-    #              `reserve_price_met` false and changed hands for nothing
-    #   starting   nobody has bid at all. A FLOOR, not a bid.
-    #
-    # Without this column one number would mean three things, and every diff
-    # between two runs would report a price change when all that happened is
-    # that an auction closed.
-    bid_kind: Optional[str] = None
-    # The label as the page printed it, kept verbatim so a locale whose
-    # wording the dictionary lookup did not cover is visible rather than
-    # silently null.
-    bid_status_text: Optional[str] = None
-    # ---- from a lot page; null on a listing row ----
-    # The site returns only the last ten bids and states no total, so this
-    # is a FLOOR once it reaches ten -- `bid_count_is_floor` is what says
-    # which kind of number it is. Two lots with very different activity both
-    # reported exactly 10.
-    bid_count: Optional[int] = None
-    bid_count_is_floor: Optional[bool] = None
-    # What the site will accept as the NEXT bid. There is deliberately no
-    # `starting_bid` column beside it: the payload's `localizedStartBidAmount`
-    # is the same number as `localizedMinBidAmount` on every lot measured
-    # (1735/1735, 1400/1400, 1301/1301), so a column named for the OPENING
-    # bid would have been a duplicate of this one wearing a misleading name --
-    # and on a closed lot it read 1301 against a final price of 1201, an
-    # opening bid above the hammer price, which is impossible. On a lot with
-    # no bids yet this figure IS the opening bid, and `bid_kind` says so.
-    next_min_bid: Optional[float] = None
-    # ---- from a listing card; null in --mode lot ----
-    # The relative timer, verbatim ("3 days left", "Noch 3\xa0Sekunden").
-    # Deliberately NOT parsed into a timestamp: a listing page states no
-    # absolute time anywhere, so any conversion would be this machine's clock
-    # dressed up as the site's fact. The absolute pair below comes from a lot
-    # page, which does state it.
-    time_left_text: Optional[str] = None
-    bidding_start_at: Optional[str] = None
-    bidding_end_at: Optional[str] = None
-    reserve_price_set: Optional[bool] = None
-    reserve_price_met: Optional[bool] = None
-    sold: Optional[bool] = None
-    # `buyNow` is an object in the payload (`{"price_eur": 771}`), not a
-    # number; the column holds the euro figure.
-    buy_now: Optional[float] = None
-    has_free_shipping: Optional[bool] = None
-    # From the hydrated CARD on a listing, never from the listing payload:
-    # the payload's own `favoriteCount` is 0 on 288 of 288 lots across 12
-    # captures while the card shows the real number on all 24 of every one.
-    # A field that is present, authoritative-looking and uniformly wrong.
-    favorite_count: Optional[int] = None
-    subtitle: Optional[str] = None
-    # The expert's estimate range, euro only. The payload gives min/max per
-    # currency with 0 in the entries it does not provide, and 0 there means
-    # "not provided" rather than "free".
-    estimate_min: Optional[float] = None
-    estimate_max: Optional[float] = None
-    auction_id: Optional[str] = None
-    auction_title: Optional[str] = None
-    # Only an auction page states these. A category or search listing gives a
-    # relative timer and nothing else, so these stay null there rather than
-    # being computed from this machine's clock.
-    auction_close_at: Optional[str] = None
-    auction_status: Optional[str] = None
-    seller_id: Optional[str] = None
-    seller_country: Optional[str] = None
-    seller_score: Optional[float] = None
-    seller_feedback_count: Optional[int] = None
-    # Which kind of page this row came off: category, search or lot. Recorded
-    # because the repo reads more than one kind and the mode is no longer
-    # implied by the source (§9).
-    listing_kind: Optional[str] = None
+    The first eighteen fields are the family prefix, byte-identical and in
+    the same order as every other repo in this family, so one consumer reads
+    a dubizzle run and a mediamarkt run with the same code. Everything after
+    `position` is dubizzle's own.
 
-# Row classes by --mode, so an engine maps its mode to a schema in one place.
-# Both modes are Product here; the mapping exists so adding a mode later is a
-# one-line change rather than a search for every place that assumed Product.
-@dataclass
-class Auction:
-    """One row per AUCTION, for --mode auctions.
+    A classifieds site is not a shop, and two of the prefix's assumptions
+    need saying out loud rather than being quietly wrong:
 
-    A different KIND of thing from a lot, so it gets its own dataclass rather
-    than a Product with most columns null (§9) -- and `sku` carries the id
-    here too, so one column name works across the family.
-
-    Deliberately thin. The auctions index publishes an id, a title, a
-    curator and a RELATIVE end phrase ("Ending now!", "Ends tomorrow"), and
-    nothing absolute; the authority for an auction's status, its absolute
-    close time and its lot count is the auction's own page, which also
-    carries every one of its lots. So this mode is a WORK LIST -- feed these
-    URLs back in as --url and the rows that come out have an absolute
-    `auction_close_at` on every one of them.
+      * A listing is a SINGLE second-hand item, not a stocked product. There
+        is no assortment behind it and no restock, so `in_stock` means "the
+        ad is still live", which is the only availability this site states.
+      * Five verticals share this schema and they do not publish the same
+        facts. `bedrooms` is null on every car and `kilometers` is null on
+        every flat. That is a property of the vertical and not a parsing
+        failure, which is why `vertical` is a column: a consumer can select
+        the rows a field is meaningful for instead of guessing from nulls.
     """
     source: str = SOURCE_DEFAULT
     scraped_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    # The listing's own absolute URL, on its emirate subdomain — the address
+    # the site itself publishes, not one rebuilt from the browsed host. Two
+    # sibling repos lost a whole column by rebuilding a URL that the page
+    # then never matched (§5).
     url: str = ""
+    # The listing's URL PATH, with a leading `/ar` stripped and no trailing
+    # slash.
+    #
+    # A path rather than an id, and the reason is measured: this site
+    # numbers its verticals differently. A motors, classified, jobs or
+    # community URL ends in `---{32-hex uuid}`, so an id is recoverable from
+    # it; a PROPERTY URL ends in `-{city-id}-{ref}` and carries neither the
+    # listing's `id` (27794657) nor its dashed `uuid`
+    # (b76a3b0a-ef13-441a-...) anywhere. An id-based sku would therefore be
+    # null on every property row the DOM fallback produced, and would differ
+    # in kind between two verticals of one site.
+    #
+    # The path is present on every row of every path — payload, JSON-LD and
+    # DOM alike — which is what a dedupe key and a two-run diff need. The
+    # `/ar` strip is what makes an Arabic run and an English run of the same
+    # category diff as the same listings rather than as a wholesale
+    # replacement.
+    #
+    # `listing_id` and `listing_uuid` below carry the site's own identifiers
+    # where it states them.
     sku: Optional[str] = None
     title: Optional[str] = None
-    # Verbatim and relative, as the index prints it. Not converted to a
-    # timestamp: the index states nothing absolute, so any conversion would
-    # be this machine's clock presented as the site's fact.
-    ends_text: Optional[str] = None
-    slug: Optional[str] = None
-    locale: Optional[str] = None
+    # The manufacturer, and ONLY where the site publishes one as a fact:
+    # `brand.name` in a motors page's JSON-LD, which is the make the seller
+    # picked from the taxonomy. Null on property, jobs and community, where
+    # there is no manufacturer to name, and null on classified, whose
+    # JSON-LD carries no ItemList at all (measured: 0 of 25 tiles on
+    # /classified/electronics/televisions/, 2026-09-14).
+    #
+    # Deliberately NOT derived by splitting a title or reading the URL's
+    # make segment. Both would be a guess wearing the costume of a fact
+    # (§8), and the URL segment is the CATEGORY's make, which for a listing
+    # filed under the wrong node is not the car's.
+    brand: Optional[str] = None
+    # What the seller is asking. An integer in the site's payload — no
+    # decimals anywhere in 195 listings across five verticals — and null
+    # rather than 0 when the listing states none.
+    #
+    # Null is COMMON here and is not a failure: a job ad publishes no salary
+    # (25 of 25 null on /jobs/accounting-finance/), a services ad usually
+    # publishes no fee (24 of 25 null on /community/auto-services/), and a
+    # property listing may set `is_price_hidden`. `price_source` says which
+    # of those a null is.
+    price: Optional[float] = None
+    # AED, and on the UAE platform that is a fact rather than a guess: the
+    # motors and property JSON-LD state `priceCurrency: "AED"` outright, and
+    # the tile prints the ISO code `AED` in its own node beside the amount.
+    # Still null rather than defaulted when there is no price — a row with
+    # no price has no currency either (§4).
+    currency: Optional[str] = None
+    # The was-price, from `pre_discount_price`. Sparse ON PURPOSE and worth
+    # keeping: only a promoted "Car of the Week" or a classified listing
+    # carries the field at all, and it is `0` far more often than not — 0 is
+    # the site's way of writing "no discount" and is read as None here, not
+    # as a free car.
+    original_price: Optional[float] = None
+    # Computed from the two prices, never read off the printed badge, and
+    # None rather than 0 or a negative when `original_price` is not above
+    # `price` — two figures that are not what they were taken for should
+    # produce no number at all (§4).
+    discount_pct: Optional[float] = None
+    # Null on every listing row of every run measured so far, and kept only
+    # because it is in the family prefix: this site rates SELLERS on a
+    # profile page, never the individual ad, and no listing tile or payload
+    # in 195 listings across five verticals carries a rating. Stated here so
+    # that nobody re-derives it from the seller's stars, which would put a
+    # different quantity in a column the family uses for the item's own.
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+    # "The ad is still live", the only availability this site states —
+    # `offers.availability` in the motors and property JSON-LD, which is
+    # `InStock` on every live listing. Null where the vertical publishes no
+    # JSON-LD rather than assumed true.
+    in_stock: Optional[bool] = None
+    image_url: Optional[str] = None
+    category: Optional[str] = None
+    # Provenance, and it is doing real work here because three sources
+    # overlap and do not carry the same columns:
+    #
+    #   next_data+jsonld  the payload, cross-checked against the page's own
+    #                     JSON-LD, which is where `brand`, `seller_name` and
+    #                     `in_stock` come from. Motors and property only.
+    #   next_data         the payload alone — classified, jobs, community,
+    #                     whose pages publish no ItemList.
+    #   dom               the fallback: a tile with no payload behind it.
+    #                     Carries url, sku, title, price, currency and
+    #                     nothing else.
+    #
+    # A `:no-price` suffix on any of them means the source named this
+    # listing and it states no price — which distinguishes "the site
+    # published none" from "we failed to read one", where a bare null
+    # cannot.
+    price_source: Optional[str] = None
     page: Optional[int] = None
     position: Optional[int] = None
 
+    # ---- dubizzle's own ----------------------------------------------
+    # Which of the site's seven top-level sections this listing is in, taken
+    # from the URL's first path segment: motors, property-for-rent,
+    # property-for-sale, classified, jobs, jobs-wanted, community. The
+    # column exists so a consumer can filter before reading a field that
+    # only one vertical publishes.
+    vertical: Optional[str] = None
+    # The site's own numeric id for the ad, from the payload. Stable across
+    # an edit that changes the slug, which `sku` is not, so this is the
+    # column to join on when tracking one ad over time.
+    listing_id: Optional[int] = None
+    # The payload's `uuid`: 32 hex characters on motors, classified, jobs
+    # and community, a dash-separated UUID on property. Both are the site's,
+    # copied verbatim rather than normalised into one shape they do not
+    # share.
+    listing_uuid: Optional[str] = None
+    # The site's own short link (`permalink` on motors and classified,
+    # `short_url` on property) — `https://dubizzle.com/s/DOBJL9S`. Survives
+    # a slug edit and is what the site's own share button copies.
+    short_url: Optional[str] = None
+    # The emirate, from the payload's `site` (motors, classified, jobs,
+    # community) or `city` (property). This is why `source` is not the
+    # hostname: a listing browsed on `uae.dubizzle.com` lives in Ajman, and
+    # the hostname of the browse would have hidden that.
+    city: Optional[str] = None
+    # The full place chain the site states, joined with " > " — e.g.
+    # "UAE > Ajman > Al Jurf > Al Jurf Industrial Area". Kept as the site
+    # writes it rather than split into columns, because the chain is a
+    # different depth per emirate and per vertical.
+    location: Optional[str] = None
+    # Who is selling, where the page names them: `offers.offeredBy.name` in
+    # the JSON-LD (the dealership or agency) or the property payload's
+    # `agent`. Null for a private seller, who the site deliberately does not
+    # name on a listing page.
+    seller_name: Optional[str] = None
+    # Normalised from two different fields that mean the same thing:
+    # motors' `seller_type` ("OW"/"DL") and property's `listed_by`
+    # ("AG"/"OW"). Written out as "owner", "dealer" or "agent" so one value
+    # means one thing across verticals.
+    seller_kind: Optional[str] = None
+    seller_id: Optional[int] = None
+    # The site's own verification badge on the ad or its seller. Not a
+    # quality judgement of ours — just which flag the payload set.
+    is_verified: Optional[bool] = None
+    # A paid placement flag. Kept separate from `listing_kind` because they
+    # answer different questions: this one is "did the seller pay to boost
+    # it", that one is "why is this row on this page at all".
+    is_premium: Optional[bool] = None
+    # Why this row is on this page:
+    #
+    #   organic          it is a result of the query
+    #   car_of_the_week  a single promoted motors listing the site injects
+    #                    into every motors page, INCLUDING a page past the
+    #                    end of the listing. It is a real ad and is kept,
+    #                    but it repeats on every page of a run and is not a
+    #                    result — which is why it is labelled rather than
+    #                    silently merged.
+    listing_kind: Optional[str] = None
+    photos_count: Optional[int] = None
+    # When the seller first posted, and when the ad was last bumped to the
+    # top — the payload's `created_at` and `added`, both Unix seconds,
+    # written as UTC ISO-8601. They differ: a car posted in February and
+    # bumped this morning reads 2026-02-05 / 2026-09-13.
+    posted_at: Optional[str] = None
+    bumped_at: Optional[str] = None
+    # Property only. A rent is quoted per period and the period is part of
+    # the price: 105,000 AED is a year's rent, not a month's. Reading a
+    # rent without this column would put a yearly and a monthly figure in
+    # one column and call them comparable.
+    payment_frequency: Optional[str] = None
+    bedrooms: Optional[int] = None
+    bathrooms: Optional[int] = None
+    # Property only, square feet, as the site states it.
+    size_sqft: Optional[float] = None
+    # Motors only, promoted out of `attributes` because they are what a car
+    # listing is actually filtered and compared on.
+    year: Optional[int] = None
+    kilometers: Optional[int] = None
+    # Everything else the vertical publishes about this listing, as
+    # {slug: value} in the site's own slugs and English values — motors'
+    # `details_v2` (up to 20 entries: body type, fuel, transmission,
+    # regional specs, warranty …) and property's `property_info`.
+    #
+    # A single column rather than 40 sparse ones, because the key set is
+    # per-vertical and grows whenever the site adds a filter. The JSON
+    # output keeps the real object; the CSV writes it as compact JSON in one
+    # cell, which is lossless and parseable, unlike a Python repr.
+    attributes: Optional[dict] = None
 
-ROW_CLASS_BY_MODE = {"listing": Product, "lot": Product, "auctions": Auction}
+
+# One kind of thing, one dataclass. This repo reads LISTING pages and
+# nothing else, so there is no second row class to keep in step.
+ROW_CLASS_BY_MODE = {"listing": Product}
 
 # Modes whose rows are one-per-sku, and therefore safe to dedupe on `sku` and
 # to hand to diff_runs.py. Both of this repo's modes qualify: a listing page
 # names each product once, and a product page IS one product.
-UNIQUE_BY_SKU_MODES = ("listing", "product")
+UNIQUE_BY_SKU_MODES = ("listing",)
 
 
 def dedupe_by_key(rows: Sequence[Any], seen: Set[str], key: str = "sku") -> List[Any]:
@@ -307,6 +321,11 @@ LIST_CSV_SEPARATOR = " | "
 def _csv_value(v: Any) -> Any:
     if isinstance(v, (list, tuple)):
         return LIST_CSV_SEPARATOR.join(str(x) for x in v)
+    # `attributes` is a mapping, and a Python repr of one is neither
+    # readable in a spreadsheet nor parseable by anything but Python.
+    # Compact JSON is both, and round-trips through json.loads.
+    if isinstance(v, dict):
+        return json.dumps(v, ensure_ascii=False, separators=(",", ":"))
     return v
 
 

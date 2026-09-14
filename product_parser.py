@@ -1,49 +1,79 @@
-"""product_parser.py — dubizzle lot extraction. This module IS the site.
+"""product_parser.py — dubizzle listing extraction. This module IS the site.
 
-Everything dubizzle-specific lives here: how a lot is recognised, where its
-data actually is, how pagination is addressed, and how a served page is told
-apart from a refusal. The engines carry a handful of named constants and
+Everything dubizzle-specific lives here: how a listing is recognised, where
+its data actually is, how pagination is addressed, and how a served page is
+told apart from a refusal. The engines carry a handful of named constants and
 nothing else.
+
+Which site this is
+------------------
+The UAE platform: `uae.dubizzle.com` and the eight emirate subdomains an
+individual ad is published under. It is a Next.js application whose listing
+grids are served by Algolia and embedded in the page's SSR payload.
+
+`dubizzle.com.bh`, `dubizzle.com.om` and `dubizzle.com.eg` carry the same
+brand and are NOT this site: they run the OLX platform (no `__NEXT_DATA__`
+anywhere, a different DOM, `<title>` reading "دوبيزل (أوليكس)" — dubizzle
+(OLX)), and `dubizzle.com.lb` redirects to `olx.com.lb` outright. Measured
+2026-09-14. `unsupported_reason` names that reason rather than saying "not a
+dubizzle site", which is false and sends the reader looking for a typo (§5).
 
 Where the data is, and why it is not where you would expect
 -----------------------------------------------------------
-dubizzle is a Next.js site, and the primary path is its own SSR payload,
-`<script id="__NEXT_DATA__">`. Not JSON-LD: a category page publishes exactly
-one `ItemList` block carrying only `name`, `url` and `image` — no price, no
-bid, no id — and a search page and a lot page publish **none at all**
-(measured on 17 captures, 2026-09-10). A JSON-LD-primary parser here would
-have produced a title-and-image scraper with no prices in it.
+Three sources overlap on a listing page and none of them is a superset of the
+others. Measured across 12 captures and 195 listings, 2026-09-14:
 
-    page kind                     SSR key                      JSON-LD
-    /{loc}/c/{id}-{slug}          pageProps.categoryLots       1 x ItemList
-    /{loc}/s?q=                   pageProps.searchLots         0
-    /{loc}/l/{id}-{slug}          pageProps.lotDetailsData     0
-                                  + pageProps.biddingBlockResponse
-                                  + pageProps.auction
-    /{loc}/a                      -- (client-side)             0
+    vertical            payload hits   JSON-LD ItemList   tile price nodes
+    motors                    25          26 (Vehicle)          26
+    property-for-rent         35          35 (RealEstate)       35
+    property-for-sale         35          35 (RealEstate)       35
+    classified                25           0                    25
+    jobs                      25           0                     0
+    community                 25           0                     0
 
-A listing's payload has NO BID in it. Bids arrive client-side over PubNub
-(`pubnubChannel`), so on a LISTING the money is only in the hydrated DOM and
-the SSR supplies everything else. On a LOT PAGE the opposite is true:
-`biddingBlockResponse` carries the amount, the absolute open/close times, the
-bid history and the sold/reserve flags, so the DOM is not needed and must not
-be used — a lot page renders a "similar lots" carousel of 30+ OTHER lots'
-prices in the same `c-lot-card__price` class the listing uses for its own
-(§4's junk-link data theft, in a new costume).
+So JSON-LD is NOT the primary path here, against this family's default (§4).
+It is absent on three of the six verticals, and a JSON-LD-primary parser
+would have produced a scraper that works on cars and flats and silently
+returns nothing on everything else. The payload —
+`__NEXT_DATA__ → props.pageProps.reduxWrapperActionsGIPP`, the Redux action
+`listings/fetchListingDataForQuery/fulfilled` — carries every listing on
+every vertical, plus the pagination contract, the ids and the per-vertical
+attributes.
 
-What `price` means on an auction site
-------------------------------------
-Three different quantities share one node, told apart only by a label in the
-page's language:
+JSON-LD is read as an ENRICHMENT, joined on the absolute URL, and it is worth
+reading: it is the only place `brand`, the dealership's name and
+`offers.availability` are stated, and its `priceCurrency` makes the currency
+a fact rather than a symbol we recognised. On motors and property the two
+sources named exactly the same 26 and 35 URLs with no disagreement, which is
+what `price_source` records.
 
-    lot_status_current_bid     a live high bid
-    lot_status_final_bid       the last bid on a closed lot
-    lot_status_starting_bid    nobody has bid at all — a floor, not a bid
+The DOM is the fallback, anchored on the listing URL pattern rather than on a
+class: every class on a tile except `lpv-cards` is a build hash
+(`mui-style-1tufyr0`).
 
-`bid_kind` records which one `price` is. Conflating them would put "what
-someone paid" and "what nobody has offered" in one column, and would make
-every diff between two runs read as a price change when all that happened is
-that an auction closed.
+What the DOM knows that the payload does not
+---------------------------------------------
+The currency. A tile's price is split across two sibling nodes —
+
+    <div class="price-ltr-wrapper">
+      <div class="mui-style-1unh6l9">AED</div>
+      <div data-testid="listing-price">389,000</div>
+    </div>
+
+— so reading the price node alone gets "389,000" with no currency, and
+reading the wrapper's text gets "AED 389,000". §4's split-price trap, in the
+shape where it is the SYMBOL rather than the cents that lives elsewhere.
+
+The trap on this site
+----------------------
+A motors page past the end of its listing answers HTTP 200 with
+`totalPages: 0, totalHits: 0`, prints "We couldn't find any results matching
+your criteria" — and still renders ONE fully-formed Car of the Week ad, with
+its own price node, its own JSON-LD item and its own listing URL. Parsing
+such a page would write one plausible phantom row per exhausted page, and
+nothing downstream could tell it from a real one. `detect_page_state` calls
+that page `empty`, and `page_flow.STATE_POLICY` does not parse an `empty`
+page.
 """
 
 from __future__ import annotations
@@ -52,12 +82,12 @@ import json
 import logging
 import math
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
-from output_writer import Auction, Product
+from output_writer import Product
 
 logger = logging.getLogger("product_parser")
 
@@ -65,127 +95,170 @@ logger = logging.getLogger("product_parser")
 # ---------------------------------------------------------------------------
 # Hosts, locales, currency
 # ---------------------------------------------------------------------------
-HOSTS = ("dubizzle.com", "uae.dubizzle.com")
 
-# Taken from the site's OWN `<link rel="alternate" hreflang=...>` set rather
-# than guessed (§5). One host, 18 locales as a path prefix -- and two of them
-# carry CAPITALS, so a lowercasing normaliser would break Chinese.
-LOCALES = ("en", "nl", "de", "fr", "it", "es", "pt", "da", "sv", "no",
-           "pl", "el", "hu", "ro", "fi", "ja", "zh-Hans", "zh-Hant")
-_LOCALE_BY_LOWER = {loc.lower(): loc for loc in LOCALES}
+# The aggregate host a listing is browsed on, and the bare domain that
+# redirects to it.
+BROWSE_HOSTS = ("uae.dubizzle.com", "www.dubizzle.com", "dubizzle.com")
 
-# EUR is a fact here rather than a guess, and it does not follow the exit or
-# the language: € on all 18 locales including ja and zh-Hant, from an NL exit
-# and from a hosting-classified one. The lot page's own `live.lot.bid` map
-# proves the point in the other direction -- it lists GBP and USD, both
-# holding the placeholder `1`, which is why only the EUR figure is ever read.
-CURRENCY = "EUR"
+# The emirate subdomains every individual ad is published under. Taken from
+# the site's OWN links rather than guessed: these are the hosts that appear in
+# `absolute_url` across the captures, counted per host. `uae.` never appears
+# as an ad's host and no emirate host ever appears as a browse host, so the
+# two sets are genuinely different roles rather than aliases.
+EMIRATE_HOSTS = ("dubai.dubizzle.com", "abudhabi.dubizzle.com",
+                 "sharjah.dubizzle.com", "ajman.dubizzle.com",
+                 "rak.dubizzle.com", "uaq.dubizzle.com",
+                 "fujairah.dubizzle.com", "alain.dubizzle.com")
+
+HOSTS = BROWSE_HOSTS + EMIRATE_HOSTS
+
+# Same brand, different platform. Refused WITH the reason (§5).
+OLX_PLATFORM_HOSTS = ("dubizzle.com.bh", "www.dubizzle.com.bh",
+                      "dubizzle.com.om", "www.dubizzle.com.om",
+                      "dubizzle.com.eg", "www.dubizzle.com.eg",
+                      "dubizzle.com.lb", "www.dubizzle.com.lb")
+
+# The UAE platform ships exactly two, as its own
+# `<link rel="alternate" hreflang=...>` set states: `en` (no prefix) and `ar`
+# (an `/ar` path prefix). There is no third.
+LOCALES = ("en", "ar")
+
+# AED, and a fact rather than a default: the motors and property JSON-LD
+# state `offers.priceCurrency: "AED"` outright, and every tile on every
+# vertical prints the ISO code in its own node. Still never written onto a
+# row that has no price (§4).
+CURRENCY = "AED"
+
+# The site's own asset hosts. A page dubizzle SERVED is built out of them —
+# 126 to 2,571 references on each of the 12 captures, the lowest being a
+# no-results page with the chrome and no grid. Neither Imperva interstitial
+# carries one: 0 on both the "Request unsuccessful / Incapsula incident ID"
+# iframe page and the "Pardon Our Interruption" page.
+#
+# This is the primary evidence for "was this served by dubizzle at all",
+# because on this site the status code is not: the "Pardon Our Interruption"
+# refusal answers **HTTP 200**.
+_ASSET_MARKER = re.compile(r"static\.dubizzle\.com|dbz-images\.dubizzle\.com")
+_ASSET_MIN_MATCHES = 2
 
 
 def site_host(url: str) -> Optional[str]:
-    """The recognised host, or None."""
-    host = (urlsplit(url).hostname or "").lower()
-    return host if host in HOSTS else None
+    host = (urlsplit(url or "").hostname or "").lower()
+    return host or None
 
 
 def unsupported_reason(url: str) -> Optional[str]:
-    """Why this URL cannot be scraped, in the reader's terms, or None.
+    """Why this URL cannot be scraped, or None when it can.
 
-    Says WHAT is wrong rather than just refusing (§5): "is not a dubizzle
-    URL" sends someone hunting for a typo when the real problem is that they
-    passed a lot page to listing mode.
+    The reason matters as much as the refusal. A dubizzle-branded OLX site is
+    not a typo and not an outage, and saying "is not a dubizzle site" would
+    send the reader hunting for one.
     """
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        return f"{url!r} is not an http(s) URL"
-    host = (parts.hostname or "").lower()
+    host = site_host(url)
     if not host:
-        return f"{url!r} has no host"
-    if host not in HOSTS:
-        return (f"{host} is not a dubizzle host; this scraper reads "
-                f"{' or '.join(HOSTS)}")
-    if locale_of(url) is None:
-        return (f"{parts.path!r} does not start with a dubizzle locale "
-                f"prefix such as /en/ or /nl/")
-    if not listing_kind(url):
-        return (f"{parts.path!r} is not a category (/c/), search (/s), lot "
-                f"(/l/) or auction (/a) path")
-    return None
+        return "no hostname in URL: %r" % (url,)
+    if host in HOSTS:
+        return None
+    if host in OLX_PLATFORM_HOSTS:
+        return ("%s carries the dubizzle brand but runs the OLX platform: no "
+                "__NEXT_DATA__ payload, a different DOM and a different "
+                "listing URL shape. This scraper reads the UAE platform "
+                "(uae.dubizzle.com and the emirate subdomains) and would "
+                "return nothing here. Measured 2026-09-14." % host)
+    if host.endswith(".dubizzle.com"):
+        return ("%s is a dubizzle host this scraper does not read. Listing "
+                "pages live on uae.dubizzle.com and individual ads on the "
+                "emirate subdomains (%s)."
+                % (host, ", ".join(EMIRATE_HOSTS[:3]) + ", ..."))
+    return "%s is not a dubizzle host. Supported: %s" % (host, ", ".join(HOSTS))
 
 
 def is_supported_host(url: str) -> bool:
-    return site_host(url) is not None
+    return unsupported_reason(url) is None
 
 
 def locale_of(url: str) -> Optional[str]:
-    """The locale segment in its OWN casing, or None.
+    """"ar" for an /ar-prefixed path, "en" otherwise — but only for a URL on
+    a host this scraper reads, so a stray path on another site does not come
+    back as a dubizzle locale."""
+    if not is_supported_host(url):
+        return None
+    parts = [p for p in urlsplit(url or "").path.split("/") if p]
+    return "ar" if parts and parts[0].lower() == "ar" else "en"
 
-    `zh-Hans` and `zh-Hant` are served case-sensitively, so the value is
-    returned as the site spells it and never lowercased.
+
+def host_currency(url: str) -> Optional[str]:
+    """The currency this host quotes in.
+
+    One platform, one country, one currency. Kept as a function rather than
+    read as the constant so that adding a second country site later is a
+    change in one place — and so the caller cannot accidentally stamp AED on
+    a row from a host that does not quote it.
     """
-    seg = urlsplit(url).path.strip("/").split("/", 1)[0]
-    return _LOCALE_BY_LOWER.get(seg.lower())
+    return CURRENCY if is_supported_host(url) else None
 
 
-def host_currency(url: str) -> str:
-    """EUR on every locale. Kept for family-shaped call sites."""
-    return CURRENCY
+def served_by_dubizzle(html: Optional[str]) -> bool:
+    """Whether this response was built out of dubizzle's own assets.
+
+    Positive evidence, which is what an inverted detector needs: an
+    interstitial, a network-error page and an empty body all fail it, and
+    none of them has to be enumerated.
+    """
+    if not html:
+        return False
+    return len(_ASSET_MARKER.findall(html)) >= _ASSET_MIN_MATCHES
 
 
 # ---------------------------------------------------------------------------
-# Paths, page kinds, pagination
+# Verticals, URL shapes, pagination
 # ---------------------------------------------------------------------------
-# A lot's own id is in its URL, and the slug beside it is decorative: the
-# site translates it per locale (`333-watches` / `333-horloges` /
-# `333-armbanduhren`) and canonicalises a foreign one itself -- a /nl/l/ URL
-# built with the English slug redirected to the Dutch spelling. So the id is
-# the key and the slug is never parsed for meaning.
-_LOT_PATH_RE = re.compile(r"^/(?P<loc>[A-Za-z-]{2,7})/l/(?P<id>\d+)(?:-(?P<slug>[^/?#]*))?/?$")
-_CATEGORY_PATH_RE = re.compile(r"^/(?P<loc>[A-Za-z-]{2,7})/c/(?P<id>\d+)(?:-(?P<slug>[^/?#]*))?/?$")
-_AUCTION_PATH_RE = re.compile(r"^/(?P<loc>[A-Za-z-]{2,7})/a/(?P<id>\d+)(?:-(?P<slug>[^/?#]*))?/?$")
-_AUCTIONS_PATH_RE = re.compile(r"^/(?P<loc>[A-Za-z-]{2,7})/a/?$")
-_SEARCH_PATH_RE = re.compile(r"^/(?P<loc>[A-Za-z-]{2,7})/s/?$")
 
-# Specification ids are stable across locales where their names are not.
-_SPEC_BRAND = 909
+# The site's own top-level sections, from the `taxonomy/taxonomyRequest`
+# action in the page's payload rather than from a hand-written list.
+VERTICALS = ("motors", "classified", "property-for-sale", "property-for-rent",
+             "jobs", "jobs-wanted", "community")
 
+# Path segments that are a listing's own address rather than a category.
+# `/motors/used-cars/` is a category; `/motors/used-cars/bmw/x4/2026/02/05/
+# 2683-pm-...---c62da01.../` is one ad. The discriminator that works on every
+# vertical is the DATE: every ad's path carries `/{yyyy}/{m}/{d}/` and no
+# category path does.
+_AD_PATH_RE = re.compile(r"/\d{4}/\d{1,2}/\d{1,2}/[^/]+/?$")
+
+# How a listing link is recognised. A URL pattern, never a class: every class
+# on a tile but `lpv-cards` is a build hash (`mui-style-1tufyr0`), and the
+# hashes change with the next deploy while the URL shape is a contract with
+# search engines.
 SELECTORS = {
-    # A lot link, anchored on the URL PATTERN and not on a class: dubizzle's
-    # own component classes carry build hashes (`LotBidStatusSection_bid-
-    # amount__bWWF4`), and a URL is a contract with search engines.
-    "item_link": 'a[href*="/l/"]',
-    # The listing card. `article.c-lot-card__container` is the outermost node
-    # covering exactly ONE lot, which is what §4 asks for -- a card links to
-    # its lot more than once (image and title), so a scope that stopped at
-    # "more than one lot link" would never leave the anchor.
-    "lot_card": "article.c-lot-card__container",
-    "card_price": ".c-lot-card__price",
-    "card_status": ".c-lot-card__status-text",
-    "card_timer": ".c-lot-card__timer",
-    "card_favorites": ".c-lot-card__top-left",
-    # Lot page. Matched by SUBSTRING because the tail is a build hash that
-    # changes on the next deploy (§4).
-    "lot_bid_amount": '[class*="LotBidStatusSection_bid-amount"]',
-    "lot_bid_status": '[class*="LotBidStatusSection_subtitle-content"]',
+    # Anchors whose href is an ad. Kept broad — the href test below is what
+    # actually decides — because the site renders the same shape for organic
+    # results, the Car of the Week and the "similar ads" rail.
+    "item_link": 'a[href*="/20"]',
+    # The tile's price, split across two nodes; the WRAPPER is what carries
+    # both the ISO code and the amount.
+    "tile_price": '[data-testid="listing-price"]',
+    "tile_title": '[data-testid="subheading-text"]',
+    "tile_location": '[data-testid="listing-location"]',
+    # The grid. `lpv-cards` is the one semantic class on a tile and is used
+    # only as a readiness hint, never as the extraction anchor.
+    "grid_card": ".lpv-cards",
 }
 
 PAGE_PARAM = "page"
 
-# The site's own footer offers at most `?page=100`, and it does not fail past
-# that -- it CLAMPS. `?page=99999` on an 11,681-lot category returned HTTP
-# 200 with `currentPage: 100` and page 100's own 24 lots (measured
-# 2026-09-10). So a planner that ignores the cap re-fetches page 100 for
-# every further page, adds no new sku, and a data-based terminator then reads
-# "listing exhausted" -- a COMPLETE run holding 2,400 of 11,681 lots. Every
-# page plan is capped here, and the cap is reported as its own stop reason
-# rather than looking like the end of the catalogue.
-PAGE_CAP = 100
-
-# Both listing kinds take `?page=N` and the payload confirms it
-# (`currentPage` 2 on a search page 2). The cap above is measured on category
-# and applied to search too: a search of 681 lots is 29 pages and cannot
-# reach it, so this is deliberately the conservative direction.
-PAGINATED_KINDS = ("category", "search")
+# A safety rail, not the real limit. The site states its own page count in
+# every payload (`pagination.totalPages`) and the two verticals measured cap
+# at different numbers — 400 on motors (10,000 ads at 25 a page) and 2,286 on
+# both property indexes (80,010 at 35 a page) — so a single constant would be
+# wrong for one of them. `total_pages()` reads the payload and falls back to
+# this only when there is no payload to read.
+#
+# Past the cap the site does NOT clamp, it empties: `?page=401` and
+# `?page=99999` on a 400-page motors listing both answered HTTP 200 with
+# `totalPages: 0, totalHits: 0`. That is a cleaner terminator than any
+# selector, and it is why `is_no_results` reads the payload first.
+PAGE_CAP = 2286
 
 TRACKING_PARAMS = frozenset("""
 utm_source utm_medium utm_campaign utm_term utm_content utm_id
@@ -194,308 +267,417 @@ _ga _gl mc_cid mc_eid ref referrer
 """.split())
 
 
+def _path_parts(url: str) -> List[str]:
+    parts = [p for p in urlsplit(url or "").path.split("/") if p]
+    if parts and parts[0].lower() == "ar":
+        parts = parts[1:]
+    return parts
+
+
+def vertical_of(url: str) -> Optional[str]:
+    """Which top-level section this URL belongs to."""
+    parts = _path_parts(url)
+    if parts and parts[0] in VERTICALS:
+        return parts[0]
+    return None
+
+
 def listing_kind(url: str) -> str:
-    """Which kind of page this URL is: category, search, lot, auction,
-    auctions, or "" when it is none of them."""
-    path = urlsplit(url).path
-    if _CATEGORY_PATH_RE.match(path):
-        return "category"
-    if _SEARCH_PATH_RE.match(path):
-        return "search"
-    if _LOT_PATH_RE.match(path):
-        return "lot"
-    if _AUCTION_PATH_RE.match(path):
-        return "auction"
-    if _AUCTIONS_PATH_RE.match(path):
-        return "auctions"
-    return ""
+    """Which kind of page this URL is: "listing", "ad", "home", or "" when it
+    is none of them.
+
+    "listing" is a browsable grid, the only kind this repo fetches. "ad" is
+    one advertisement's own page, recognised so that a user who pastes one
+    gets told what it is rather than an empty run.
+    """
+    if not is_supported_host(url):
+        return ""
+    path = urlsplit(url or "").path
+    parts = _path_parts(url)
+    if not parts:
+        return "home"
+    if parts[0] not in VERTICALS:
+        return ""
+    if _AD_PATH_RE.search(path):
+        return "ad"
+    return "listing"
+
+
+PAGINATED_KINDS = ("listing",)
 
 
 def strip_tracking(url: str) -> str:
-    """The URL without tracking parameters and without a fragment.
+    """Drop campaign parameters, keep everything else in its original order.
 
-    The site's own pagination links end in `#filters`, which is not part of
-    the address and would otherwise make two spellings of one page look like
-    two pages.
+    Two URLs that differ only by a `utm_source` are the same page, and a
+    dedupe or a "did page 1's next-link agree with the convention" check that
+    does not know it will answer no to an identical address.
     """
-    parts = urlsplit(url)
-    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    s = urlsplit(url or "")
+    kept = [(k, v) for k, v in parse_qsl(s.query, keep_blank_values=True)
             if k not in TRACKING_PARAMS]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path,
-                       urlencode(kept), ""))
+    return urlunsplit((s.scheme, s.netloc, s.path,
+                       urlencode(kept, doseq=True), ""))
 
 
 def paginates_by_url(url: str) -> bool:
-    """Whether page N of this listing has an address of its own."""
+    """Whether page N of this URL has an address of its own.
+
+    True for every listing grid on this site, and that is measured rather
+    than assumed: page 1's own `<link rel="next">` is
+    `https://uae.dubizzle.com/motors/used-cars/?page=2` — exactly what the
+    convention below builds — and page 2's payload reports `pagination.page:
+    1` for it. So every page's address is knowable up front and workers can
+    be handed independent pages (§7).
+    """
     return listing_kind(url) in PAGINATED_KINDS
 
 
 def page_url(url: str, page_num: int) -> Optional[str]:
-    """The address of page `page_num`, or None if there cannot be one.
+    """`?page=N`, replacing rather than duplicating, preserving the filters.
 
-    None means "do not fetch this": either the kind does not paginate by URL,
-    or the number is past the site's own cap, where a request would silently
-    return the capped page's contents instead of failing.
+    Page 1 is the bare URL with no `page` parameter — which is what the
+    site's own `<link rel="prev">` on page 2 points at, so the convention
+    agrees with the site rather than merely working.
     """
     if page_num < 1 or not paginates_by_url(url):
         return None
-    if page_num > PAGE_CAP:
-        return None
-    parts = urlsplit(strip_tracking(url))
-    params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    s = urlsplit(url or "")
+    params = [(k, v) for k, v in parse_qsl(s.query, keep_blank_values=True)
               if k != PAGE_PARAM]
     if page_num > 1:
         params.append((PAGE_PARAM, str(page_num)))
-    return urlunsplit((parts.scheme, parts.netloc, parts.path,
-                       urlencode(params), ""))
+    return urlunsplit((s.scheme, s.netloc, s.path,
+                       urlencode(params, doseq=True), ""))
 
 
 def page_number_from_url(url: str) -> int:
-    """The page this URL addresses; 1 when it says nothing."""
-    for key, value in parse_qsl(urlsplit(url).query):
-        if key == PAGE_PARAM:
+    """The 1-based page an URL addresses. The payload counts from 0 and the
+    URL counts from 1; this returns the URL's convention, and `parse_products`
+    is given the same number so `page` on a row matches the address the
+    operator asked for."""
+    for k, v in parse_qsl(urlsplit(url or "").query, keep_blank_values=True):
+        if k == PAGE_PARAM:
             try:
-                return max(1, int(value))
-            except ValueError:
+                return max(1, int(v))
+            except (TypeError, ValueError):
                 return 1
     return 1
 
 
-_NOT_A_CATEGORY = frozenset("""
-c s l a u v e f help pages accounts feed stories press highlights
-livestreams lp veiling
-""".split())
+# Segments that are a vertical or a routing artefact rather than a category
+# anyone browses.
+_NOT_A_CATEGORY = frozenset(("ar", "en", "search", "s"))
 
 
 def category_from_url(url: str) -> Optional[str]:
-    """The category slug a listing URL names, or None.
+    """The browsed category path, e.g. "motors/used-cars" or
+    "classified/electronics/televisions".
 
-    The numeric id is the stable key and is returned with it, because the
-    slug alone is a different string in each of the 18 locales.
+    The whole chain rather than the leaf: "televisions" alone loses which
+    vertical it was under, and two verticals can and do use the same leaf
+    word.
     """
-    match = _CATEGORY_PATH_RE.match(urlsplit(url).path)
-    if not match:
+    parts = [p for p in _path_parts(url) if p not in _NOT_A_CATEGORY]
+    if not parts or parts[0] not in VERTICALS:
         return None
-    slug = match.group("slug") or ""
-    if slug in _NOT_A_CATEGORY:
-        return None
-    return f"{match.group('id')}-{slug}" if slug else match.group("id")
+    if _AD_PATH_RE.search(urlsplit(url or "").path):
+        # An ad's path carries its category too, up to the date.
+        cut = next((i for i, p in enumerate(parts) if re.fullmatch(r"\d{4}", p)),
+                   len(parts))
+        parts = parts[:cut]
+    return "/".join(parts) or None
 
 
 def sku_from_url(url: str) -> Optional[str]:
-    """The lot id from a lot URL. The site's own id, not a derived one."""
-    match = _LOT_PATH_RE.match(urlsplit(url).path)
-    return match.group("id") if match else None
+    """The row key: the ad's URL path, locale-stripped, no trailing slash.
 
-
-def auction_id_from_url(url: str) -> Optional[str]:
-    match = _AUCTION_PATH_RE.match(urlsplit(url).path)
-    return match.group("id") if match else None
-
-
-def _lot_id_from_href(href: str) -> Optional[int]:
-    match = re.search(r"/l/(\d+)", href or "")
-    return int(match.group(1)) if match else None
+    Why a path and not an id is argued in `output_writer.Product.sku`. The
+    short version: four of this site's five verticals carry a 32-hex uuid in
+    the URL and property carries neither of its two ids, so an id-derived key
+    would be null on every property row the DOM path produced.
+    """
+    if not url:
+        return None
+    path = urlsplit(url).path
+    if not _AD_PATH_RE.search(path):
+        return None
+    parts = _path_parts(url)
+    if not parts:
+        return None
+    return "/" + "/".join(parts)
 
 
 # ---------------------------------------------------------------------------
 # The SSR payload
 # ---------------------------------------------------------------------------
+
 _NEXT_DATA_RE = re.compile(
     r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
 
+# The Redux action whose payload holds the grid. Named rather than
+# positional: the action list is 7 entries long on a hub page and 33 on a
+# property listing, and its order moves between verticals.
+_LISTINGS_ACTION = "listings/fetchListingDataForQuery/fulfilled"
 
-def next_data(html: str) -> Optional[dict]:
-    """`pageProps` out of the Next.js payload, or None if it is not there."""
-    match = _NEXT_DATA_RE.search(html or "")
-    if not match:
+
+def next_data(html: Optional[str]) -> Optional[dict]:
+    """The page's `__NEXT_DATA__`, or None when there is none to parse."""
+    if not html:
+        return None
+    m = _NEXT_DATA_RE.search(html)
+    if not m:
         return None
     try:
-        return (json.loads(match.group(1)) or {}).get("props", {}).get("pageProps")
-    except (ValueError, AttributeError):
+        return json.loads(m.group(1))
+    except (ValueError, TypeError):
+        # Loud on purpose: a payload that is present and unparseable is a
+        # site change, not an empty page, and the two want different
+        # responses.
         logger.warning("__NEXT_DATA__ present but not parseable as JSON")
         return None
 
 
-_LOTS_KEYS = ("categoryLots", "searchLots")
+def _redux_actions(props: Optional[dict]) -> List[dict]:
+    page_props = (((props or {}).get("props") or {}).get("pageProps") or {})
+    actions = page_props.get("reduxWrapperActionsGIPP")
+    return [a for a in actions if isinstance(a, dict)] if isinstance(actions, list) else []
 
 
-def lots_payload(page_props: Optional[dict]) -> Tuple[Optional[str], dict]:
-    """The listing payload and which key held it.
+def listings_payload(props: Optional[dict]) -> dict:
+    """The grid payload: `hits`, `pagination`, and the promoted rails.
 
-    Three shapes, because an AUCTION page is a listing too and spells itself
-    differently: a category and a search publish
-    `{total, lots[], filters, meta}` under their own key, while an auction
-    page publishes a bare `lots` LIST beside an `auction` object -- 130 lots
-    on one page, no `total` of its own and no pagination at all. Normalising
-    it here rather than in the caller is what lets one `parse_products` read
-    all three.
+    Returns `{}` rather than raising when the page has no grid — a hub page,
+    a 404 and a challenge all legitimately have none, and telling them apart
+    is `detect_page_state`'s job, not this one's.
     """
-    props = page_props or {}
-    for key in _LOTS_KEYS:
-        value = props.get(key)
-        if isinstance(value, dict) and isinstance(value.get("lots"), list):
-            return key, value
-    bare = props.get("lots")
-    if isinstance(bare, list):
-        auction = props.get("auction") or {}
-        total = auction.get("numberOfLots") or auction.get("lotCount")
-        return "lots", {"lots": bare,
-                        "total": total if isinstance(total, int) else len(bare),
-                        "meta": {}}
-    return None, {}
+    for action in _redux_actions(props):
+        if action.get("type") == _LISTINGS_ACTION:
+            payload = action.get("payload")
+            return payload if isinstance(payload, dict) else {}
+    return {}
 
 
-def total_results(html: str) -> Optional[int]:
-    """How many lots the listing says it holds, in total."""
-    _, payload = lots_payload(next_data(html))
-    total = payload.get("total")
+def _pagination(html: Optional[str]) -> dict:
+    pag = listings_payload(next_data(html)).get("pagination")
+    return pag if isinstance(pag, dict) else {}
+
+
+def total_results(html: Optional[str]) -> Optional[int]:
+    """How many ads the listing says it holds, in total."""
+    total = _pagination(html).get("totalHits")
     return total if isinstance(total, int) else None
 
 
-def lots_per_page(html: str) -> int:
-    props = next_data(html) or {}
-    value = props.get("lotsPerPage")
-    return value if isinstance(value, int) and value > 0 else 24
+def hits_per_page(html: Optional[str]) -> int:
+    """How many ads a page of this vertical holds. 25 on motors, classified,
+    jobs and community; 35 on both property indexes. Read rather than
+    assumed — a hardcoded 25 would have mis-computed every property page
+    count by 40%."""
+    value = _pagination(html).get("hitsPerPage")
+    return value if isinstance(value, int) and value > 0 else 25
 
 
-def total_pages(html: str, url: str = "") -> Optional[int]:
-    """Pages this listing has, from ARITHMETIC and capped by the site's own
-    limit -- no selector, no link-chaining.
+def total_pages(html: Optional[str], url: str = "") -> Optional[int]:
+    """Pages this listing has, from the site's OWN count.
 
-    This is the strongest form §7 asks for: page 1's payload states `total`
-    and `lotsPerPage`, so every page's address is knowable at once and
-    workers can be handed independent pages.
+    The strongest form §7 asks for, and stronger than the arithmetic a
+    sibling repo needs: page 1's payload states `totalPages` directly, so no
+    selector is followed and no page count is inferred. The site applies its
+    own result cap before publishing this number, which is why it is 400 on a
+    34,619-ad motors listing.
     """
-    if url and listing_kind(url) == "auction":
-        # An auction page carries every one of its lots at once -- 130 of 130
-        # on the captured one -- and publishes no page links. Dividing its
-        # total by `lotsPerPage` would invent pages that do not exist.
-        return 1
-    total = total_results(html)
-    if total is None:
+    pages = _pagination(html).get("totalPages")
+    if not isinstance(pages, int):
         return None
-    pages = max(1, math.ceil(total / lots_per_page(html)))
+    if pages <= 0:
+        # Past the end of the listing. One page, and it holds nothing —
+        # reported as 1 rather than 0 so a caller asking "how many pages"
+        # never divides by it.
+        return 1
     return min(pages, PAGE_CAP)
 
 
-def pages_beyond_cap(html: str) -> int:
+def pages_beyond_cap(html: Optional[str]) -> int:
     """How many pages the catalogue has that the site will not address.
 
-    Reported rather than swallowed: a run that stops at the cap is complete
-    as far as the site is concerned and truncated as far as the catalogue is,
-    and only saying so lets a consumer tell the two apart.
+    Reported rather than swallowed: a motors listing of 34,619 ads publishes
+    400 pages of 25, so 24,619 ads — 985 pages — are simply not reachable
+    through pagination. A run that stops at 400 is complete as far as the
+    site is concerned and a third of the way through as far as the catalogue
+    is, and only saying so lets a consumer tell the two apart.
     """
     total = total_results(html)
-    if total is None:
+    stated = _pagination(html).get("totalPages")
+    if total is None or not isinstance(stated, int) or stated <= 0:
         return 0
-    pages = max(1, math.ceil(total / lots_per_page(html)))
-    return max(0, pages - PAGE_CAP)
+    needed = max(1, math.ceil(total / hits_per_page(html)))
+    return max(0, needed - stated)
 
 
-def search_header(html: str) -> Optional[str]:
-    """The query a search page ran, from the payload rather than the heading."""
-    props = next_data(html) or {}
-    query = (props.get("query") or {}) if isinstance(props.get("query"), dict) else {}
-    term = query.get("q")
-    return term if isinstance(term, str) and term else None
+def search_header(html: Optional[str]) -> Optional[str]:
+    """The Algolia index a listing page queried — "motors.com",
+    "classified.com", "by_verification_feature_asc_property-for-rent-
+    residential.com".
+
+    Not a search box's text: this site filters by PATH, not by query string,
+    so the index name is the closest thing to "what was asked for" that the
+    page states about itself. Logged by the engines, which is what the
+    family uses this for.
+    """
+    name = listings_payload(next_data(html)).get("algoliaIndexName")
+    return name if isinstance(name, str) and name else None
 
 
 # ---------------------------------------------------------------------------
-# Bid state, resolved through the page's own dictionary
+# Bilingual values
 # ---------------------------------------------------------------------------
-# The three states are identical in markup -- no modifier class, no data
-# attribute (checked: `modifiers=()` on all 24 cards of every capture) -- and
-# differ only by a label in the page's language.
-#
-# Rather than a hand-written table for 18 languages, the label is mapped back
-# through the dictionary the page already ships:
-# `_nextI18Next.initialI18nStore.{locale}.translations`, ~1035 entries keyed
-# by stable English names. It is locale-proof and it self-heals if the site
-# retranslates.
-#
-# The key choice is load-bearing, not cosmetic. Two keys read "Current bid"
-# in English and the card uses `lot_status_current_bid`; in zh-Hant they
-# differ -- `lot_status_current_bid` is the card's 現時出價 while
-# `auction_current_bid` is 當前出價. A table built from the English page would
-# have looked right and matched nothing in Chinese.
-_BID_KIND_BY_KEY = {
-    "lot_status_current_bid": "current",
-    "lot_status_final_bid": "final",
-    "lot_status_starting_bid": "starting",
-}
 
-# Zero-width characters are the site's own empty-price placeholder, and they
-# are the reason `.c-lot-card__price` is present on 24 of 24 cards while 2-3
-# of them hold no price at all. A truthiness check on the node reports 100%
-# coverage and writes an invisible character into every row (§10).
-_ZERO_WIDTH = "​‌‍⁠﻿"
+_ZERO_WIDTH = "\u200b\u200c\u200d\u2060\ufeff"
 
 
 def _clean(text: Optional[str]) -> str:
-    if not text:
+    if not isinstance(text, str):
         return ""
-    stripped = text.strip()
-    for char in _ZERO_WIDTH:
-        stripped = stripped.replace(char, "")
-    return stripped.strip()
+    for ch in _ZERO_WIDTH:
+        text = text.replace(ch, "")
+    return re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip()
 
 
-def bid_kind_labels(page_props: Optional[dict]) -> Dict[str, str]:
-    """`{rendered label: bid kind}` for the page's own locale."""
-    i18n = (page_props or {}).get("_nextI18Next") or {}
-    store = i18n.get("initialI18nStore") or {}
-    labels: Dict[str, str] = {}
-    for bundle in store.values():
-        translations = (bundle or {}).get("translations") or {}
-        for key, kind in _BID_KIND_BY_KEY.items():
-            label = _clean(translations.get(key))
-            if label:
-                labels[label] = kind
-    return labels
+def _en(value: Any) -> Optional[str]:
+    """The English side of one of this site's bilingual values.
+
+    Every human-readable string in the payload is `{"en": ..., "ar": ...}`,
+    and both halves are sometimes the same string: a motors ad's
+    `absolute_url.ar` is byte-identical to its `.en` (the site publishes no
+    Arabic motors URL at all), while a property ad's carries an `/ar` prefix.
+    Falls through to the Arabic side rather than returning nothing, because a
+    row with an Arabic title is worth more than a row with none.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return _clean(value) or None
+    if isinstance(value, dict):
+        got = _clean(value.get("en")) or _clean(value.get("ar"))
+        if got:
+            return got
+        # `{"id": 2, "name": {"en": "Dubai", "ar": "..."}}` — property wraps
+        # what motors states flat. Both are the site's own, and a reader that
+        # knows only the flat shape leaves `city` null on a third of the
+        # property rows while looking like it worked.
+        if isinstance(value.get("name"), (dict, str)):
+            return _en(value.get("name"))
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+    return None
+
+
+def _en_list(value: Any) -> List[str]:
+    """The English side of a bilingual LIST — `location_list`, `places`,
+    `neighborhoods` and `categories` all take this shape."""
+    if isinstance(value, dict):
+        for key in ("en", "ar"):
+            got = value.get(key)
+            if isinstance(got, list):
+                return [_clean(x) for x in got if _clean(x)]
+        name = value.get("name")
+        if isinstance(name, dict):
+            return _en_list(name)
+    if isinstance(value, list):
+        return [_clean(x) for x in value if _clean(x)]
+    return []
+
+
+def _int(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        digits = re.sub(r"[^\d]", "", value)
+        return int(digits) if digits else None
+    return None
+
+
+def _number(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return price_in(value)
+    return None
+
+
+def _epoch_iso(value: Any) -> Optional[str]:
+    """A Unix second count as a UTC ISO-8601 string.
+
+    Guarded rather than trusted: the payload's `added` and `created_at` are
+    seconds, but a field that is occasionally milliseconds would otherwise
+    silently produce a year in the 56th century.
+    """
+    from datetime import datetime, timezone
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    seconds = float(value)
+    if seconds > 1e11:          # milliseconds
+        seconds /= 1000.0
+    if not (0 < seconds < 4e9):  # before 1970 or after 2096: not a date
+        return None
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
-# Money
+# Price text (the DOM fallback path only — the payload states numbers)
 # ---------------------------------------------------------------------------
-# One currency, five written forms for it, all seen on the same lots:
-#   €1,535   en, ja, zh-*      symbol first, comma grouping
-#   € 1.535  nl, pl            symbol first, space, dot grouping
-#   1.535 €  de                symbol last
-#   €27      any               no grouping
-# and the German timer beside it uses NBSP, so no-break variants have to be
-# part of the grouping class or `1 535 €` parses as 535 (§4).
-_GROUP_SPACES = "    "
-_AMOUNT = (r"\d{1,3}(?:[.," + _GROUP_SPACES + r"]\d{3})+(?:[.,]\d{1,2})?"
-           r"|\d+(?:[.,]\d{1,2})?")
-_PRICE_RE = re.compile(r"€\s*(" + _AMOUNT + r")|(" + _AMOUNT + r")\s*€")
+
+# A rendered page uses a no-break variant so the number cannot wrap, so the
+# plain space is not enough (§4).
+_GROUP_SPACES = " \u00a0\u202f\u2009"
+_AMOUNT = (r"\d{1,3}(?:[.,%s]\d{3})+(?:[.,]\d{1,2})?" % _GROUP_SPACES
+           + r"|\d+(?:[.,]\d{1,2})?")
+# The UAE writes AED as a prefix, as an ISO code and occasionally as "Dhs".
+# Matched longest-first so "AED" is not swallowed by a bare "D".
+_PRICE_RE = re.compile(r"(?:AED|DHS|Dhs|د\.إ)\s*(" + _AMOUNT + r")"
+                       r"|(" + _AMOUNT + r")\s*(?:AED|DHS|Dhs|د\.إ)")
+# Stripped BEFORE matching, not rejected after: a rejected match has already
+# consumed the currency symbol beside it (§4).
 _PCT_RE = re.compile(r"-?\s*\d{1,3}(?:[.,]\d+)?\s*%|-?\s*%\s*\d{1,3}(?:[.,]\d+)?")
 
 
 def _normalize_amount(raw: str) -> Optional[float]:
-    """A written amount as a number, honouring all three groupings.
-
-    `1,234.56` / `1.234,56` / `1 234,56`, with the space form allowing NBSP,
-    narrow NBSP and thin space. Whichever of dot and comma comes LAST is the
-    decimal point; where only one appears, exactly three trailing digits is a
-    thousands grouping, because no currency has a three-digit subunit.
-    """
-    text = (raw or "").strip()
-    for space in _GROUP_SPACES:
-        if space != " ":
-            text = text.replace(space, " ")
-    text = text.replace(" ", ".")
+    """One number out of one of the three grouping conventions."""
+    text = raw.strip()
+    for space in _GROUP_SPACES[1:]:
+        text = text.replace(space, " ")
     has_dot, has_comma = "." in text, "," in text
     if has_dot and has_comma:
-        decimal = "," if text.rfind(",") > text.rfind(".") else "."
-        text = text.replace("." if decimal == "," else ",", "").replace(decimal, ".")
-    elif has_comma:
-        head, _, tail = text.rpartition(",")
-        text = (head + tail) if len(tail) == 3 else text.replace(",", ".")
-    elif has_dot:
-        head, _, tail = text.rpartition(".")
-        if len(tail) == 3:
-            text = text.replace(".", "")
+        # Whichever comes last is the decimal point.
+        if text.rfind(".") > text.rfind(","):
+            text = text.replace(",", "")
+        else:
+            text = text.replace(".", "").replace(",", ".")
+    elif has_dot or has_comma:
+        sep = "." if has_dot else ","
+        tail = text.rsplit(sep, 1)[1]
+        if len(tail) == 3 and text.count(sep) >= 1:
+            # Exactly three trailing digits is a thousands grouping: no
+            # currency has a three-digit subunit, so "AED 1,234" is 1234.
+            text = text.replace(sep, "")
+        else:
+            text = text.replace(sep, ".") if sep == "," else text
+    if " " in text:
+        groups = text.split(" ")
+        # Space grouping needs FULL three-digit groups, or a spec list beside
+        # a price merges into one number.
+        if all(re.fullmatch(r"\d{3}", g) for g in groups[1:]) and groups[0].isdigit():
+            text = "".join(groups)
+        else:
+            return None
     try:
         return float(text)
     except ValueError:
@@ -503,243 +685,491 @@ def _normalize_amount(raw: str) -> Optional[float]:
 
 
 def prices_in(text: str) -> List[float]:
-    """Every euro amount in reading order, percentages removed FIRST.
-
-    Removed first rather than rejected afterwards: a rejected match has
-    already consumed the currency symbol, so skipping it loses the real price
-    too (§4).
-    """
+    """Every AED amount in a piece of text, in order."""
+    if not text:
+        return []
+    cleaned = _PCT_RE.sub(" ", _clean(text))
     out: List[float] = []
-    for match in _PRICE_RE.finditer(_PCT_RE.sub(" ", text or "")):
-        value = _normalize_amount(match.group(1) or match.group(2))
-        if value is not None:
-            out.append(value)
+    for m in _PRICE_RE.finditer(cleaned):
+        amount = _normalize_amount(m.group(1) or m.group(2) or "")
+        if amount is not None:
+            out.append(amount)
     return out
 
 
 def price_in(text: str) -> Optional[float]:
-    """The first euro amount in `text`, or None."""
+    """The first AED amount in a piece of text, or None."""
     found = prices_in(text)
     return found[0] if found else None
 
 
 # ---------------------------------------------------------------------------
-# Detection: what kind of answer did we get?
+# Blocks and challenges
 # ---------------------------------------------------------------------------
-# Positive detection, inverted from the usual marker hunt, because on this
-# site the refusal carries no vendor marker worth matching: Akamai answers a
-# refused request with a 394-byte "Access Denied" page whose only clue is an
-# `errors.edgesuite.net` reference id. Chromium's own network-error page is
-# the same problem one step worse -- it carries `<title>uae.dubizzle.com</title>`
-# and would pass a title check (§18).
-#
-# What every page the site actually serves has, and neither refusal does, is
-# a reference to dubizzle's own asset hosts.
-_ASSET_MARKER = re.compile(r"assets\.dubizzle\.nl|cdn\.dubizzle\.net"
-                           r"|assets\.dubizzle\.com", re.I)
-_ASSET_MIN_MATCHES = 2
 
-# Vendor markers are deliberately SHORT of `akamai`. dubizzle IS fronted by
-# Akamai and its refusal is an Akamai page -- but the string appears in the
-# response HEADER (`server: AkamaiGHost`), not in the body of a good page or
-# a bad one: 0 occurrences in all six captures checked. §18's rule is that a
-# marker matching a good page is worse than no marker; the corollary is that
-# a marker matching NEITHER is not a marker at all.
+# Imperva fronts this site, and its refusal takes two shapes. Both were
+# captured from a real refusal rather than transcribed from a vendor's docs:
 #
-# Two sets, because §8's "detected is not blocking" begins with not calling
-# them the same thing:
+#   1,160 bytes  an iframe page whose only visible text is
+#                "Request unsuccessful. Incapsula incident ID: ..."
+#   6,183 bytes  "Pardon Our Interruption" — served with **HTTP 200**
 #
-#   BLOCK_MARKERS          the site refused. Nothing to solve and nothing to
-#                          pay for; a real browser or another exit is the
-#                          answer.
-#   BOT_CHALLENGE_MARKERS  something solvable was rendered. This is the only
-#                          set `--solve-captcha` acts on.
-#
-# The refusal is 394 bytes of "Access Denied" carrying a reference id and no
-# vendor name, so the reference host is the one durable string in it.
+# The status code is therefore NOT the signal here, which is why
+# `served_by_dubizzle` leads the classification.
 BLOCK_MARKERS = (
-    "errors.edgesuite.net",
-    "Access Denied",
+    "Request unsuccessful. Incapsula incident",
+    "Pardon Our Interruption",
+    "/_Incapsula_Resource?SWUDNSAI=",
 )
 
-# dubizzle rendered none of these to an anonymous visitor across 19 captures
-# and 6 locales, and -- unlike a sibling repo in this family -- it ships no
-# captcha mount point and no site key in its page config either
-# (`<captcha-widgets>` and `CAPTCHA_SITE_KEY`: 0 occurrences on every
-# capture). Those are another site's findings and were checked before being
-# believed here. This set is therefore forward-looking: the shapes a
-# challenge WOULD take, kept so that an appearance is recognised instead of
-# being reported as an empty page.
+# What a challenge looks like — a page asking the visitor to prove something,
+# as opposed to one refusing outright.
+#
+# `_Incapsula_Resource` on its OWN is deliberately NOT in this list, and that
+# is the §18 rule applied before it could cost anything: the marker appears
+# once on pages dubizzle plainly served (1 occurrence on the motors page 1
+# capture and 1 on the property capture, against 3 and 4 on the two refusals).
+# A marker that matches a good page is worse than no marker, so the entries
+# below are the ones a served page cannot carry — the challenge widget
+# itself, not the vendor's ordinary instrumentation.
 BOT_CHALLENGE_MARKERS = (
+    "g-recaptcha",
+    "grecaptcha.render",
+    "recaptcha/api.js",
     "recaptcha/api2/anchor",
     "recaptcha/api2/bframe",
-    "recaptcha/api.js",
-    "data-sitekey",
-    "hcaptcha.com/captcha",
-    "challenges.cloudflare.com",
-    "px-captcha",
+    "hcaptcha.com/1/api.js",
+    "challenges.cloudflare.com/turnstile",
+    "_Incapsula_Resource?SWCGHOEL",
+    "Incapsula incident ID",
 )
 
-# There is NO extension-tag stripping here, and that is a measurement rather
-# than an oversight. The Scraping Browser's auto-solve extension does inject
-# its own hunters into every page it loads: a CDP capture of a perfectly good
-# listing page carries 16 `chrome-extension://` scripts, among them
-# `recaptcha/hunter.js`, plus a `data-ts-input="cf-turnstile-response"`
-# attribute. But none of the markers above matches that capture even WITHOUT
-# stripping -- measured: `detect_bot_challenge` returns None and
-# `detect_page_state` returns "content" on it -- so the guard §8 describes
-# would be code that looks load-bearing and never runs (§17).
-#
-# Add it back together WITH any broadening of the set above. A bare
-# `recaptcha`, a bare `cf-turnstile` or a hunter path are exactly the strings
-# the extension puts on good pages.
+# The Scraping Browser's auto-solve extension injects its own hunters into
+# every page it loads, so a challenge marker can be OURS rather than the
+# site's (§8). Stripped before the scan because two of the markers above
+# (`recaptcha/api.js`, `challenges.cloudflare.com/turnstile`) are exactly
+# what that extension injects — unlike two sibling repos, where the same
+# guard would have been dead code, this marker set can genuinely match one.
+_EXTENSION_SCRIPT_RE = re.compile(
+    r"<script[^>]+src=\"(?:chrome|moz)-extension://[^\"]*\"[^>]*>\s*</script>",
+    re.I)
 
 
-def served_by_dubizzle(html: str) -> bool:
-    """Whether this page was built out of dubizzle's own assets.
-
-    The primary signal, and the only one that answers correctly for a
-    browser-generated error page: Chromium's own network-error page carries
-    `<title>uae.dubizzle.com</title>`, so a title check calls it a real page,
-    and it holds no vendor marker of any kind (§18).
-    """
-    return len(_ASSET_MARKER.findall(html or "")) >= _ASSET_MIN_MATCHES
+def _without_extension_scripts(html: str) -> str:
+    return _EXTENSION_SCRIPT_RE.sub("", html or "")
 
 
-def detect_block_marker(html: str) -> Optional[str]:
-    """The refusal marker this page carries, or None."""
-    lowered = (html or "").lower()
+def detect_block_marker(html: Optional[str]) -> Optional[str]:
+    """Which refusal this is, or None."""
+    if not html:
+        return None
     for marker in BLOCK_MARKERS:
-        if marker.lower() in lowered:
+        if marker in html:
             return marker
     return None
 
 
-def detect_bot_challenge(html: str, url: str = "") -> Optional[str]:
-    """The SOLVABLE challenge this page rendered, or None.
+def detect_bot_challenge(html: Optional[str], url: str = "") -> Optional[str]:
+    """Which challenge is on this page, or None.
 
-    Deliberately silent about a refusal: a solve must not be attempted, or
-    charged for, on a page that carries nothing to solve.
+    Broad on purpose (§8): different geos and scenarios surface different
+    challenges, and a detection that only knows the one we happened to meet
+    is a detection that fails the first time the site changes vendor.
     """
-    lowered = (html or "").lower()
+    if not html:
+        return None
+    stripped = _without_extension_scripts(html)
     for marker in BOT_CHALLENGE_MARKERS:
-        if marker.lower() in lowered:
+        if marker in stripped:
             return marker
     return None
 
 
-def is_no_results(html: str) -> bool:
-    """Whether a search genuinely matched nothing.
+# The site's own no-results sentence, in both its languages. A SECONDARY
+# signal: the payload's own `totalHits: 0` is unambiguous and language-
+# independent, and is checked first. This exists for the case where the
+# payload is absent but the page plainly says it found nothing.
+#
+# The Arabic sentence is NOT pinned here, because no Arabic no-results page
+# was captured and transcribing one from a translator would be inventing
+# evidence. If you capture one, add it.
+NO_RESULTS_MARKERS = (
+    "We couldn\u2019t find any results matching your criteria",
+    "We couldn't find any results matching your criteria",
+)
 
-    This needs the payload, not a phrase. A search that matches nothing
-    returns HTTP 200, prints "No results", AND backfills the grid with 24
-    suggested lots reported as `total: 24` -- so a parser trusting the count
-    returns two dozen plausible rows for a query that matched nothing.
 
-    The site states the truth itself: `meta.extended_search_result` is true
-    exactly when the results shown are not the query's own.
+def is_no_results(html: Optional[str]) -> bool:
+    """Whether the site served this page and told us it holds nothing.
+
+    Ordered by what each signal PROVES, not by what is cheap to check (§17):
+    the payload stating `totalHits: 0` is the site's own answer and settles
+    it; the sentence is a fallback for a page with no payload.
     """
-    _, payload = lots_payload(next_data(html))
-    meta = payload.get("meta") or {}
-    return bool(meta.get("extended_search_result"))
+    if not html:
+        return False
+    pag = _pagination(html)
+    if pag:
+        if pag.get("totalHits") == 0 or pag.get("totalPages") == 0:
+            return True
+        return False
+    return any(marker in html for marker in NO_RESULTS_MARKERS)
 
 
-def detect_page_state(html: str, status: Optional[int] = None,
+def detect_page_state(html: Optional[str], status: Optional[int] = None,
                       url: str = "") -> str:
-    """What kind of answer this is: content, empty, blocked, challenge or
-    shell.
+    """Which of the five states this response is.
 
-    Ordered by how much each signal PROVES, not by what is cheapest to check
-    (§17). An unambiguous positive -- the payload holding lots -- outranks
-    the asset-reference threshold, so a leanly-built real page cannot be
-    reported as blocked; and the vendor marker scan only ever refines a state
-    that has already gone wrong.
+    Signals are ordered by how much each one PROVES, which on this site is
+    not the order they are cheapest in (§17):
+
+      1. No body at all              -> blocked. Nothing to read.
+      2. An explicit refusal marker  -> blocked, even at HTTP 200, because
+                                        "Pardon Our Interruption" IS a 200.
+      3. Not built out of dubizzle's assets -> blocked. This catches an
+                                        interstitial nobody has enumerated
+                                        and Chromium's own network-error
+                                        page, whose <title> is the site's
+                                        hostname and which carries no vendor
+                                        marker at all (§18).
+      4. A challenge widget          -> challenge.
+      5. The payload names hits      -> content. Positive and unambiguous.
+      6. The payload says zero       -> empty. Checked AFTER content so a
+                                        page with results is never talked out
+                                        of them.
+      7. Served, no payload yet      -> shell. Wants the readiness wait, not
+                                        another fetch.
+
+    `status` is positional and comes SECOND, matching `page_flow.classify`.
     """
-    html = html or ""
-    props = next_data(html)
-    key, payload = lots_payload(props)
-
-    # 1. Unambiguous positive: the site served its own listing payload.
-    if payload.get("lots"):
-        if is_no_results(html):
-            return "empty"
-        return "content"
-    if props and (props.get("lotDetailsData") or props.get("auction")):
-        return "content"
-
-    # 2. Its own empty answer, stated by the payload rather than by a phrase.
-    if key and payload.get("total") == 0:
-        return "empty"
-
-    # 3. A challenge it rendered on purpose.
-    if detect_bot_challenge(html):
-        return "challenge"
-
-    # 4. A refusal. The status is the primary signal where there is one: this
-    #    site answers a refused request with 403 and a page carrying no
-    #    vendor marker worth matching.
-    if status is not None and status in (401, 403, 429) or (
-            status is not None and status >= 500):
+    if html is None:
         return "blocked"
     if detect_block_marker(html):
         return "blocked"
     if not served_by_dubizzle(html):
         return "blocked"
-
-    # 5. An auctions index: no lot payload by design, so its own links are
-    #    the positive signal. Without this it falls through to `shell` and an
-    #    engine waits for a grid that is never coming.
-    if listing_kind(url) == "auctions" and auction_links(html):
+    if detect_bot_challenge(html, url):
+        return "challenge"
+    payload = listings_payload(next_data(html))
+    hits = payload.get("hits")
+    if isinstance(hits, list) and hits:
         return "content"
-
-    # 6. Served, built from the site's assets, and holding no payload yet.
-    #    This is a page that is still painting, and it wants a WAIT rather
-    #    than a retry -- retrying a shell just fetches another shell (§18).
+    if is_no_results(html):
+        return "empty"
+    if status is not None and status >= 400:
+        # Served by dubizzle, no grid, and the site said so with a status.
+        # A 404 category is an empty answer, not a refusal.
+        return "empty"
+    if url and listing_kind(url) != "listing":
+        # A HUB, not a grid: `uae.dubizzle.com/` and `/jobs/` are landing
+        # pages of category tiles and promo rails, and they never paint a
+        # result grid however long you wait. Calling them `shell` would send
+        # the engine into a readiness wait that cannot succeed and then into
+        # the DOM fallback, which on the home page finds 45 ad links in the
+        # promo rails and writes 45 rows of carousel text — a complete-looking
+        # run of data nobody asked for. They are `empty`: served exactly as
+        # requested, holding no listing.
+        return "empty"
     return "shell"
 
 
 # ---------------------------------------------------------------------------
-# Listing rows
+# JSON-LD enrichment
 # ---------------------------------------------------------------------------
-def _cards_by_lot_id(soup: BeautifulSoup,
-                     labels: Dict[str, str]) -> Dict[int, dict]:
-    """What the hydrated DOM adds to each lot, keyed by the site's lot id.
 
-    Joined on the id in the card's own anchor, which is the same id the SSR
-    payload uses -- 24 cards against 24 payload lots on every capture -- so
-    the two views cannot be misaligned by rendering order.
-    """
-    out: Dict[int, dict] = {}
-    for card in soup.select(SELECTORS["lot_card"]):
-        anchor = card.select_one("a[href]")
-        lot_id = _lot_id_from_href(anchor.get("href")) if anchor else None
-        if lot_id is None:
+_LD_RE = re.compile(
+    r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', re.S)
+
+
+def jsonld_blocks(html: Optional[str]) -> List[Any]:
+    out: List[Any] = []
+    for raw in _LD_RE.findall(html or ""):
+        try:
+            out.append(json.loads(raw))
+        except (ValueError, TypeError):
             continue
-        price_node = card.select_one(SELECTORS["card_price"])
-        status_node = card.select_one(SELECTORS["card_status"])
-        timer_node = card.select_one(SELECTORS["card_timer"])
-        favorites_node = card.select_one(SELECTORS["card_favorites"])
-        status = _clean(status_node.get_text(" ", strip=True)) if status_node else ""
-        favorites = _clean(favorites_node.get_text(" ", strip=True)) if favorites_node else ""
-        out[lot_id] = {
-            "price": price_in(_clean(price_node.get_text(" ", strip=True))) if price_node else None,
-            "bid_kind": labels.get(status),
-            "bid_status_text": status or None,
-            "time_left_text": _clean(timer_node.get_text(" ", strip=True)) or None if timer_node else None,
-            "favorite_count": int(favorites) if favorites.isdigit() else None,
-        }
     return out
 
 
-def _buy_now_amount(value: Any) -> Optional[float]:
-    """`buyNow` is an object, not a number: `{"price_eur": 771}`."""
+def _ld_image(value: Any) -> Optional[str]:
+    """A schema.org `image` in any of its four legal shapes (§4)."""
+    if isinstance(value, str):
+        return value or None
     if isinstance(value, dict):
-        amount = value.get("price_eur")
-        if isinstance(amount, (int, float)):
-            return float(amount)
-    elif isinstance(value, (int, float)):
-        return float(value)
+        return value.get("url") or value.get("contentUrl") or None
+    if isinstance(value, list):
+        for item in value:
+            got = _ld_image(item)
+            if got:
+                return got
     return None
+
+
+def _ld_offer(value: Any) -> dict:
+    """`offers` as a dict, a list, or an explicit null.
+
+    `.get("offers", {})` is not enough: a JSON null is a PRESENT key, so the
+    default never applies and the caller gets None where it expected a dict
+    (§4's first row).
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                return item
+    return {}
+
+
+def jsonld_items_by_url(html: Optional[str]) -> Dict[str, dict]:
+    """The page's JSON-LD ItemList, keyed by the ad's locale-stripped PATH.
+
+    The path rather than the URL, and that is not tidiness: on an ARABIC
+    listing the two sources disagree about the address of the same ad. The
+    JSON-LD publishes `/ar/motors/used-cars/...` while the payload's
+    `absolute_url.ar` is byte-identical to its `.en` and carries no `/ar` at
+    all. Keyed on the full URL the join matched 25 of 25 ads in English and
+    **0 of 25 in Arabic**, silently emptying `brand`, `seller_name` and
+    `in_stock` on every Arabic row while the run reported success — the
+    exact shape of this codebase's most common bug class.
+
+    Empty on classified, jobs and community, which publish no ItemList at
+    all — that is the measurement that decided the payload is primary, and
+    an empty dict here is the normal case rather than a failure.
+    """
+    out: Dict[str, dict] = {}
+    for block in jsonld_blocks(html):
+        if not isinstance(block, dict):
+            continue
+        main = block.get("mainEntity")
+        if not isinstance(main, dict):
+            continue
+        for element in main.get("itemListElement") or []:
+            item = element.get("item") if isinstance(element, dict) else None
+            if isinstance(item, dict) and isinstance(item.get("url"), str):
+                key = sku_from_url(item["url"])
+                if key:
+                    out[key] = item
+    return out
+
+
+def jsonld_currency(html: Optional[str]) -> Optional[str]:
+    """`priceCurrency` from the page's AggregateOffer — the site naming its
+    own currency, which outranks anything read off the DOM (§4)."""
+    for block in jsonld_blocks(html):
+        if isinstance(block, dict):
+            code = _ld_offer(block.get("offers")).get("priceCurrency")
+            if isinstance(code, str) and re.fullmatch(r"[A-Z]{3}", code):
+                return code
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Rows
+# ---------------------------------------------------------------------------
+
+_SELLER_KIND = {"OW": "owner", "DL": "dealer", "AG": "agent"}
+
+
+def _seller_kind(hit: dict) -> Optional[str]:
+    """One word for what the seller is, out of two fields that mean the same
+    thing on two different verticals."""
+    code = hit.get("seller_type")
+    if isinstance(code, str) and code in _SELLER_KIND:
+        return _SELLER_KIND[code]
+    listed_by = hit.get("listed_by")
+    if isinstance(listed_by, dict):
+        code = listed_by.get("value")
+        if isinstance(code, str) and code in _SELLER_KIND:
+            return _SELLER_KIND[code]
+        label = _en(listed_by)
+        if label:
+            return label.lower()
+    return None
+
+
+def _image(hit: dict) -> Optional[str]:
+    """The tile's photo. `photos` is a DICT on motors, classified, jobs and
+    community and a LIST of dicts on property — both legal, both real, and a
+    parser that knows only one returns null on a fifth of the site."""
+    photos = hit.get("photos")
+    if isinstance(photos, dict):
+        for key in ("main", "thumb", "micro"):
+            got = photos.get(key)
+            if isinstance(got, str) and got:
+                return got
+    if isinstance(photos, list):
+        for entry in photos:
+            if isinstance(entry, dict):
+                for key in ("main", "thumb", "micro"):
+                    got = entry.get(key)
+                    if isinstance(got, str) and got:
+                        return got
+            elif isinstance(entry, str) and entry:
+                return entry
+    thumbs = hit.get("photo_thumbnails")
+    if isinstance(thumbs, list) and thumbs and isinstance(thumbs[0], str):
+        return thumbs[0]
+    return None
+
+
+def _attributes(hit: dict) -> Optional[dict]:
+    """Everything the vertical publishes about this ad, as {slug: value}.
+
+    Two shapes, both flattened into one mapping:
+
+      motors     `details_v2` — groups (`primary`, `secondary`, ...) each
+                 holding a list of {label, value, slug}
+      property   `property_info` — a flat list of {label, value, id}
+
+    English values, because the slug is already the stable key and an Arabic
+    run should still produce a column a consumer can compare across runs.
+    """
+    out: Dict[str, str] = {}
+    details = hit.get("details_v2")
+    if isinstance(details, dict):
+        for group in details.values():
+            if not isinstance(group, list):
+                continue
+            for entry in group:
+                if not isinstance(entry, dict):
+                    continue
+                slug = entry.get("slug") or entry.get("id")
+                value = _en(entry.get("value"))
+                if isinstance(slug, str) and slug and value:
+                    out[slug] = value
+    info = hit.get("property_info")
+    if isinstance(info, list):
+        for entry in info:
+            if not isinstance(entry, dict):
+                continue
+            slug = entry.get("id") or entry.get("slug")
+            value = _en(entry.get("value"))
+            if isinstance(slug, str) and slug and value:
+                out[slug] = value
+    return out or None
+
+
+def _discount(price: Optional[float],
+              original: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+    """`(original_price, discount_pct)` from the payload's two figures.
+
+    `pre_discount_price: 0` is how this site writes "no discount", and a
+    naive read turns it into a 100%-off car. Anything not strictly above the
+    price produces None for BOTH columns — two figures that are not what they
+    were taken for should produce no number at all (§4).
+    """
+    if price is None or original is None:
+        return None, None
+    if original <= 0 or original <= price:
+        return None, None
+    return original, round((original - price) / original * 100.0, 2)
+
+
+def _row_from_hit(hit: dict, page: int, position: int, url: str,
+                  category: Optional[str], ld: Dict[str, dict],
+                  ld_currency: Optional[str], kind: str) -> Optional[Product]:
+    absolute = _en(hit.get("absolute_url"))
+    if not absolute:
+        return None
+    sku = sku_from_url(absolute)
+    item = (ld.get(sku) or {}) if sku else {}
+    offer = _ld_offer(item.get("offers"))
+
+    price = _number(hit.get("price"))
+    if price is None:
+        price = _number(offer.get("price"))
+    original, discount = _discount(price, _number(hit.get("pre_discount_price")))
+
+    currency = None
+    if price is not None:
+        currency = (offer.get("priceCurrency") if isinstance(offer.get("priceCurrency"), str)
+                    else None) or ld_currency or host_currency(url)
+
+    source = "next_data+jsonld" if item else "next_data"
+    if price is None:
+        source += ":no-price"
+
+    brand = None
+    brand_node = item.get("brand")
+    if isinstance(brand_node, dict):
+        brand = _clean(brand_node.get("name")) or None
+    elif isinstance(brand_node, str):
+        brand = _clean(brand_node) or None
+
+    seller_name = _en((offer.get("offeredBy") or {}).get("name")) if isinstance(
+        offer.get("offeredBy"), dict) else None
+    if not seller_name:
+        agent = hit.get("agent")
+        if isinstance(agent, dict):
+            seller_name = _en(agent.get("name"))
+
+    availability = offer.get("availability")
+    in_stock = None
+    if isinstance(availability, str) and availability:
+        in_stock = availability.rstrip("/").rsplit("/", 1)[-1].lower() == "instock"
+
+    places = _en_list(hit.get("location_list")) or _en_list(hit.get("places"))
+    if not places:
+        city_node = hit.get("city")
+        hood = _en_list(hit.get("neighborhoods"))
+        places = [p for p in ([_en(city_node)] if isinstance(city_node, dict) else []) + hood if p]
+    city = _en(hit.get("site")) or _en(hit.get("city"))
+    if not city and len(places) > 1:
+        city = places[1]
+
+    attributes = _attributes(hit)
+    year = _int((attributes or {}).get("year"))
+    kilometers = _int((attributes or {}).get("kilometers"))
+
+    verified = hit.get("is_verified")
+    if verified is None:
+        verified = hit.get("is_verified_user") or hit.get("is_verified_business") or None
+
+    return Product(
+        url=absolute,
+        sku=sku,
+        title=_en(hit.get("name")) or _clean(item.get("name")) or None,
+        brand=brand,
+        price=price,
+        currency=currency,
+        original_price=original,
+        discount_pct=discount,
+        # Both left null deliberately: this site rates sellers, never ads.
+        rating=None,
+        review_count=None,
+        in_stock=in_stock,
+        image_url=_image(hit) or _ld_image(item.get("image")),
+        category=category or category_from_url(absolute) or category_from_url(url),
+        price_source=source,
+        page=page,
+        position=position,
+        vertical=vertical_of(absolute) or vertical_of(url),
+        listing_id=_int(hit.get("id")),
+        listing_uuid=hit.get("uuid") if isinstance(hit.get("uuid"), str) else None,
+        short_url=(hit.get("permalink") or hit.get("short_url")
+                   if isinstance(hit.get("permalink") or hit.get("short_url"), str) else None),
+        city=city,
+        location=" > ".join(places) if places else None,
+        seller_name=seller_name,
+        seller_kind=_seller_kind(hit),
+        seller_id=_int(hit.get("user_id")) or _int((hit.get("agent") or {}).get("id")
+                                                   if isinstance(hit.get("agent"), dict) else None),
+        is_verified=bool(verified) if verified is not None else None,
+        is_premium=bool(hit["is_premium"]) if isinstance(hit.get("is_premium"), bool)
+        else (bool(hit["is_premium_ad"]) if isinstance(hit.get("is_premium_ad"), bool) else None),
+        listing_kind=kind,
+        photos_count=_int(hit.get("photos_count")),
+        posted_at=_epoch_iso(hit.get("created_at")),
+        bumped_at=_epoch_iso(hit.get("added")),
+        payment_frequency=_en(hit.get("payment_frequency")),
+        bedrooms=_int(hit.get("bedrooms")),
+        bathrooms=_int(hit.get("bathrooms")),
+        size_sqft=_number(hit.get("size")),
+        year=year,
+        kilometers=kilometers,
+        attributes=attributes,
+    )
 
 
 def parse_products(html: str, url: str, page: int = 1,
@@ -750,345 +1180,148 @@ def parse_products(html: str, url: str, page: int = 1,
     Payload order is page order, which is what §8 requires: a dedupe that
     mutates a running set inside a fetch loop makes the output depend on
     which page finished first.
+
+    The promoted Car of the Week is emitted AFTER the organic results and
+    labelled, even though the site renders it first. It is the same ad on
+    every page of a run, so leaving it in position 1 of each page would make
+    the first organic result of every page look like position 2 — and a
+    consumer sorting by position would read the same car 400 times.
     """
     props = next_data(html)
-    key, payload = lots_payload(props)
-    lots = payload.get("lots") or []
-    soup = BeautifulSoup(html or "", "html.parser")
-    overlay = _cards_by_lot_id(soup, bid_kind_labels(props))
-    auction = (props or {}).get("auction") or {}
-    auction_title = _clean(auction.get("title")) or None
-    auction_close_at = _clean(auction.get("closeAt")) or None
-    auction_status = _clean(auction.get("status")) or None
+    payload = listings_payload(props)
+    hits = payload.get("hits")
+    hits = hits if isinstance(hits, list) else []
+    promoted = payload.get("cotwListings")
+    promoted = promoted if isinstance(promoted, list) else []
 
-    if not lots:
-        return _dom_only_rows(soup, url, page, position_offset, props)
+    soup = BeautifulSoup(html or "", "html.parser")
+    if not hits and not promoted:
+        # The fallback runs only where a grid was ASKED for. Every page on
+        # this site carries ad links in its promo rails — the home page has
+        # 45 — so a fallback that fired on any URL would turn a hub into a
+        # page of rows built out of carousel text.
+        if listing_kind(url) != "listing":
+            return []
+        return _dom_only_rows(soup, url, page, position_offset)
+
+    ld = jsonld_items_by_url(html)
+    ld_currency = jsonld_currency(html)
 
     rows: List[Product] = []
-    for index, lot in enumerate(lots, start=1):
-        if not isinstance(lot, dict):
-            continue
-        lot_id = lot.get("id")
-        card = overlay.get(lot_id, {})
-        price = card.get("price")
-        rows.append(Product(
-            url=lot.get("url") or "",
-            sku=str(lot_id) if lot_id is not None else None,
-            title=_clean(lot.get("title")) or None,
-            # No brand field anywhere on a listing. A title here reads
-            # "Cartier - Tank Must de Cartier PM - ..." and splitting on the
-            # dash would be a guess presented as a fact (§8); the lot page's
-            # own `specifications` carry a real Brand and fill this in
-            # --mode lot.
-            brand=None,
-            price=price,
-            currency=CURRENCY if price is not None else None,
-            image_url=lot.get("originalImageUrl") or lot.get("thumbImageUrl") or None,
-            category=category or category_from_url(url),
-            # Provenance, and on this site it is doing real work: the amount
-            # comes from the DOM and everything else from the payload, so a
-            # row whose card had not hydrated is `next_data` and is missing
-            # its price for a reason a consumer can see.
-            price_source="next_data+dom" if price is not None else "next_data",
-            page=page,
-            position=position_offset + index,
-            bid_kind=card.get("bid_kind"),
-            bid_status_text=card.get("bid_status_text"),
-            time_left_text=card.get("time_left_text"),
-            # From the DOM, NOT from the payload. The payload's own
-            # `favoriteCount` is 0 on 288 of 288 lots across 12 listing
-            # captures while the hydrated card shows the real figure on every
-            # one of them -- a field that is present, authoritative-looking
-            # and uniformly wrong.
-            favorite_count=card.get("favorite_count"),
-            subtitle=_clean(lot.get("subtitle")) or None,
-            auction_id=str(lot["auctionId"]) if lot.get("auctionId") else None,
-            reserve_price_set=lot.get("reservePriceSet"),
-            buy_now=_buy_now_amount(lot.get("buyNow")),
-            has_free_shipping=lot.get("hasFreeShipping"),
-            bidding_start_at=lot.get("biddingStartTime") or None,
-            listing_kind=key and {"categoryLots": "category",
-                                  "searchLots": "search",
-                                  "lots": "auction"}.get(key),
-            # Only an auction page states these, and they are the columns a
-            # category listing cannot give at all: an absolute close time and
-            # the auction's own status. A row scraped by auction is therefore
-            # strictly better than the same row scraped by category -- worth
-            # saying in the README rather than leaving to be discovered.
-            auction_title=auction_title,
-            auction_close_at=auction_close_at,
-            auction_status=auction_status,
-        ))
+    position = position_offset
+    for group, kind in ((hits, "organic"), (promoted, "car_of_the_week")):
+        for hit in group:
+            if not isinstance(hit, dict):
+                continue
+            position += 1
+            row = _row_from_hit(hit, page, position, url, category, ld,
+                                ld_currency, kind)
+            if row is None:
+                position -= 1
+                continue
+            rows.append(row)
     return rows
+
+
+def _tile_of(anchor: Any) -> Any:
+    """The smallest ancestor that still covers exactly ONE ad.
+
+    Counts distinct ad URLs, not links (§4). Capped at 8 levels so a
+    malformed document cannot walk to <body>: on this site the tile is one
+    level up and the grid — 26 ads — is two, so stopping late would give
+    every row its neighbours' price.
+    """
+    node = anchor
+    best = anchor
+    for _ in range(8):
+        parent = getattr(node, "parent", None)
+        if parent is None or getattr(parent, "name", None) in (None, "body", "html"):
+            break
+        hrefs = {a.get("href") for a in parent.select("a[href]")
+                 if _is_ad_href(a.get("href"))}
+        if len(hrefs) > 1:
+            break
+        best = parent
+        node = parent
+    return best
+
+
+def _is_ad_href(href: Optional[str]) -> bool:
+    if not isinstance(href, str) or not href:
+        return False
+    return bool(_AD_PATH_RE.search(urlsplit(href).path))
+
+
+def _absolutise(href: str, url: str) -> str:
+    """A tile's href against the BROWSED host.
+
+    The site renders listing links as absolute paths on the browse host and
+    the payload publishes them on the ad's emirate subdomain, so a DOM-only
+    row's URL is not byte-identical to a payload row's. Said here rather than
+    silently: the two agree on `sku`, which is the path, and that is what
+    dedupe and diff use.
+    """
+    if href.startswith("http://") or href.startswith("https://"):
+        return href
+    s = urlsplit(url or "")
+    base = "%s://%s" % (s.scheme or "https", s.netloc or "uae.dubizzle.com")
+    return base + (href if href.startswith("/") else "/" + href)
 
 
 def _dom_only_rows(soup: BeautifulSoup, url: str, page: int,
-                   position_offset: int, props: Optional[dict]) -> List[Product]:
-    """The fallback path: cards without a payload behind them.
+                   position_offset: int) -> List[Product]:
+    """The fallback path: tiles with no payload behind them.
 
-    Kept because the payload is one script tag away from a redesign, and a
-    URL pattern is not. It cannot recover the payload-only columns, and says
-    so through `price_source` rather than leaving a caller to guess.
+    Kept because the payload is one Redux action name away from a redesign
+    and a URL shape is not. It cannot recover the payload-only columns and
+    says so in `price_source` rather than leaving a consumer to guess why
+    two thirds of the row is null.
     """
-    labels = bid_kind_labels(props)
     rows: List[Product] = []
-    for index, card in enumerate(soup.select(SELECTORS["lot_card"]), start=1):
-        anchor = card.select_one("a[href]")
-        href = anchor.get("href") if anchor else ""
-        lot_id = _lot_id_from_href(href)
-        if lot_id is None:
+    seen: set = set()
+    position = position_offset
+    for anchor in soup.select("a[href]"):
+        href = anchor.get("href")
+        if not _is_ad_href(href):
             continue
-        price_node = card.select_one(SELECTORS["card_price"])
-        status_node = card.select_one(SELECTORS["card_status"])
-        title_node = card.select_one(".c-lot-card__title")
-        price = price_in(_clean(price_node.get_text(" ", strip=True))) if price_node else None
+        absolute = _absolutise(href, url)
+        sku = sku_from_url(absolute)
+        if not sku or sku in seen:
+            continue
+        seen.add(sku)
+        tile = _tile_of(anchor)
+        # The tile's own title node, not the anchor's text: an anchor wraps
+        # the whole card here, so its text is the price, the badges, the
+        # specs and the location run together.
+        heading = tile.select_one(SELECTORS["tile_title"])
+        image = tile.select_one("img[alt]")
+        title = (_clean(heading.get_text(" ", strip=True)) if heading is not None else "")
+        if not title and image is not None:
+            # The site alt-texts a tile photo with the ad's title and a
+            # "-0" index suffix.
+            title = re.sub(r"-\d+$", "", _clean(image.get("alt") or ""))
+        price_node = tile.select_one(SELECTORS["tile_price"])
+        # The WRAPPER, because the ISO code lives in the price node's sibling
+        # and the node itself holds only the digits.
+        price_text = ""
+        if price_node is not None:
+            holder = price_node.parent if price_node.parent is not None else price_node
+            price_text = holder.get_text(" ", strip=True)
+        price = price_in(price_text)
+        position += 1
         rows.append(Product(
-            url=href,
-            sku=str(lot_id),
-            title=_clean(title_node.get_text(" ", strip=True)) or None if title_node else None,
+            url=absolute,
+            sku=sku,
+            title=title or None,
             price=price,
-            currency=CURRENCY if price is not None else None,
-            category=category_from_url(url),
-            price_source="dom",
+            currency=host_currency(url) if price is not None else None,
+            image_url=(tile.select_one("img[src]") or {}).get("src")
+            if tile.select_one("img[src]") is not None else None,
+            category=category_from_url(absolute) or category_from_url(url),
+            price_source="dom" if price is not None else "dom:no-price",
             page=page,
-            position=position_offset + index,
-            bid_kind=labels.get(_clean(status_node.get_text(" ", strip=True))) if status_node else None,
+            position=position,
+            vertical=vertical_of(absolute) or vertical_of(url),
+            listing_kind="organic",
         ))
-    if rows:
-        logger.warning("no SSR payload on %s: %d rows recovered from the DOM "
-                       "alone, without the payload-only columns", url, len(rows))
     return rows
-
-
-# ---------------------------------------------------------------------------
-# A lot page
-# ---------------------------------------------------------------------------
-def parse_lot_page(html: str, url: str,
-                   category: Optional[str] = None) -> Optional[Product]:
-    """One row for one lot, from the payload only.
-
-    Deliberately not from the DOM. A lot page renders a "similar lots"
-    carousel of 30+ other lots in the very same `c-lot-card__price` class a
-    listing uses for its own price, and its own bid node is absent once
-    bidding has closed -- so "the first euro amount on the page" is a
-    neighbour's price or an estimate. The payload has the amount, both
-    absolute times, the bid history and the sold/reserve flags, and needs
-    none of that guessing.
-    """
-    props = next_data(html)
-    if not props:
-        return None
-    details = props.get("lotDetailsData") or {}
-    bidding = props.get("biddingBlockResponse") or {}
-    auction = props.get("auction") or {}
-    if not details:
-        return None
-
-    lot_id = details.get("lotId") or sku_from_url(url)
-    # Only the EUR figure is real: `live.lot.bid` lists GBP and USD holding
-    # the placeholder 1 on every lot seen.
-    amount = bidding.get("localizedCurrentBidAmount")
-    price = float(amount) if isinstance(amount, (int, float)) else None
-    closed = bool(bidding.get("closed") or details.get("isClosed"))
-    # A closed lot's amount is the LAST bid, which is a hammer price only if
-    # it sold: this one reached EUR 1,300 with `reservePriceMet: false`, so
-    # it changed hands for nothing at all.
-    if price is None:
-        kind = None
-    elif closed:
-        kind = "final"
-    elif bidding.get("biddingHistory", {}).get("bids"):
-        kind = "current"
-    else:
-        kind = "starting"
-
-    estimate = details.get("expertsEstimate") or {}
-    # Keyed by the site's own numeric `specificationId`, NOT by `name`: the
-    # names are translated (909 is "Brand" on /en and "Merk" on /nl, and the
-    # id is 909 on both), so a name-keyed lookup returns a brand on English
-    # pages and null on the other seventeen locales -- which is exactly how
-    # it read before a second locale was run (§15).
-    specs = {s.get("specificationId"): s.get("value")
-             for s in (details.get("specifications") or [])
-             if isinstance(s, dict)}
-    seller = details.get("sellerInfo") or {}
-    score = (seller.get("score") or {}) if isinstance(seller.get("score"), dict) else {}
-    images = [i.get("url") or i.get("originalUrl")
-              for i in (details.get("images") or []) if isinstance(i, dict)]
-
-    return Product(
-        url=strip_tracking(url),
-        sku=str(lot_id) if lot_id is not None else None,
-        title=_clean(details.get("lotTitle")) or None,
-        # The lot page has a real Brand in its own specifications, so this
-        # column is a fact here where it is null on a listing row.
-        brand=_clean(specs.get(_SPEC_BRAND)) or None,
-        price=price,
-        currency=CURRENCY if price is not None else None,
-        in_stock=(not closed) if price is not None or closed else None,
-        image_url=next((i for i in images if i), None),
-        category=category or _clean(
-            (details.get("category") or {}).get("name")
-            if isinstance(details.get("category"), dict) else None) or None,
-        price_source="next_data",
-        bid_kind=kind,
-        subtitle=_clean(details.get("lotSubtitle")) or None,
-        favorite_count=details.get("favoriteCount"),
-        auction_id=str(auction.get("id")) if auction.get("id") else None,
-        auction_title=_clean(auction.get("title")) or None,
-        # `reservePriceMet` is null exactly when the lot has no reserve, and
-        # a bool when it has one. Checked against the listing payload's own
-        # `reservePriceSet` for both captured lots: False/null and
-        # True/false. Two lots is thin, so this is stated rather than
-        # assumed -- but it beats reporting "unknown" for a fact the payload
-        # does carry.
-        reserve_price_set=bidding.get("reservePriceMet") is not None,
-        reserve_price_met=bidding.get("reservePriceMet"),
-        sold=bidding.get("sold"),
-        # Absolute, per LOT, and epoch millis in the payload. A listing page
-        # has only a relative timer ("3 days left"), which means nothing in a
-        # dataset read tomorrow.
-        bidding_start_at=_epoch_iso(bidding.get("biddingStartTime")),
-        bidding_end_at=_epoch_iso(bidding.get("biddingEndTime")),
-        bid_count=_bid_count(bidding),
-        bid_count_is_floor=_bid_count_is_floor(bidding),
-        next_min_bid=_number(bidding.get("localizedMinBidAmount")),
-        buy_now=_buy_now_amount(details.get("buyNow")
-                                or (bidding.get("live") or {}).get("lot", {}).get("buyNow")),
-        # `min`/`max` are per currency and the non-EUR entries hold 0 -- which
-        # means "not provided" and not "free" (§4's null-versus-zero).
-        estimate_min=_number((estimate.get("min") or {}).get("EUR")) or None,
-        estimate_max=_number((estimate.get("max") or {}).get("EUR")) or None,
-        seller_id=str(seller.get("id")) if seller.get("id") else None,
-        seller_country=_clean(((seller.get("address") or {}).get("country") or {}).get("name")) or None,
-        seller_score=_number(score.get("score")),
-        seller_feedback_count=score.get("lifetimeCount"),
-        listing_kind="lot",
-    )
-
-
-# The site returns the last TEN bids and no total: two lots with very
-# different activity both reported exactly 10, and `biddingHistory` carries
-# no count field. So the length is a FLOOR once it reaches the cap, and the
-# column says which kind of number it is -- without that flag one column
-# would silently mean two things (the family's `sold_is_floor` lesson).
-_BID_HISTORY_CAP = 10
-
-
-def _bid_history(bidding: dict) -> List[dict]:
-    bids = (bidding.get("biddingHistory") or {}).get("bids")
-    return [b for b in bids if isinstance(b, dict)] if isinstance(bids, list) else []
-
-
-def _bid_count(bidding: dict) -> Optional[int]:
-    count = len(_bid_history(bidding))
-    return count or None
-
-
-def _bid_count_is_floor(bidding: dict) -> Optional[bool]:
-    count = len(_bid_history(bidding))
-    return count >= _BID_HISTORY_CAP if count else None
-
-
-def _number(value: Any) -> Optional[float]:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-
-def _epoch_iso(value: Any) -> Optional[str]:
-    """Epoch milliseconds as an ISO-8601 UTC string."""
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return None
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat()
-
-
-_AUCTION_HREF_RE = re.compile(r"/(?:[A-Za-z-]{2,7})/a/(\d+)-([^\"?#]*)")
-
-
-def auction_links(html: str) -> List[Tuple[str, str]]:
-    """`(id, slug)` for every auction an index page lists.
-
-    The auctions index carries no lot payload and no lot cards at all -- its
-    24 auctions arrive client-side -- so it is read from its own links. This
-    is the URL-pattern path doing the job structured data cannot.
-    """
-    seen: Dict[str, str] = {}
-    for auction_id, slug in _AUCTION_HREF_RE.findall(html or ""):
-        seen.setdefault(auction_id, slug)
-    return sorted(seen.items())
-
-
-AUCTION_CARD_SELECTOR = '[data-testid="all-auctions-card"]'
-
-
-def auction_rows(html: str, url: str, page: int = 1) -> List[Auction]:
-    """One row per auction on the index page.
-
-    Anchored on the site's own `data-testid`, which is a semantic name rather
-    than a build hash -- the card's inner classes are Tailwind utilities and
-    its title lives in an `<h6>` with no id of its own, so the title is the
-    card's FIRST `<h6>` and the relative end phrase is the second.
-
-    Two fields the index appears to offer are deliberately NOT read. The
-    badge in the image corner holds `+127` on one card and `18+` on the next
-    -- a further-lots hint and an age warning in the same position -- so
-    reading it as a lot count would publish an age flag as a number on some
-    rows. And "Curated by {name}" is a person; the auction's own page states
-    the same expert in a structured field for anyone who wants it.
-    """
-    soup = BeautifulSoup(html or "", "html.parser")
-    rows: List[Auction] = []
-    seen = set()
-    for index, card in enumerate(soup.select(AUCTION_CARD_SELECTOR), start=1):
-        anchor = card.select_one('a[href*="/a/"]')
-        if not anchor:
-            continue
-        href = anchor.get("href") or ""
-        match = _AUCTION_HREF_RE.search(href)
-        if not match:
-            continue
-        auction_id, slug = match.group(1), match.group(2)
-        if auction_id in seen:
-            continue
-        seen.add(auction_id)
-        headings = card.find_all("h6")
-        rows.append(Auction(
-            url=href if href.startswith("http") else f"https://uae.dubizzle.com{href}",
-            sku=auction_id,
-            title=_clean(headings[0].get_text(" ", strip=True)) if headings else None,
-            ends_text=(_clean(headings[1].get_text(" ", strip=True))
-                       if len(headings) > 1 else None),
-            slug=slug or None,
-            locale=locale_of(url),
-            page=page,
-            position=index,
-        ))
-    if not rows:
-        # The links are there even when the cards are not: `auction_links`
-        # reads the raw hrefs, which is the fallback that keeps a redesign of
-        # the card from emptying the mode entirely.
-        for index, (auction_id, slug) in enumerate(auction_links(html), start=1):
-            rows.append(Auction(
-                url=f"https://uae.dubizzle.com/{locale_of(url) or 'en'}/a/{auction_id}-{slug}",
-                sku=auction_id, slug=slug or None, locale=locale_of(url),
-                page=page, position=index))
-        if rows:
-            logger.warning("auctions index: no cards matched %s, %d rows "
-                           "recovered from links alone",
-                           AUCTION_CARD_SELECTOR, len(rows))
-    return rows
-
-
-def auction_metadata(html: str, url: str) -> Dict[str, Optional[str]]:
-    """What a page says about the auction its lots belong to."""
-    props = next_data(html) or {}
-    auction = props.get("auction") or {}
-    return {
-        "auction_id": str(auction.get("id")) if auction.get("id") else auction_id_from_url(url),
-        "auction_title": _clean(auction.get("title")) or None,
-        "auction_status": _clean(auction.get("status")) or None,
-        "auction_start_at": _clean(auction.get("startAt")) or None,
-        "auction_close_at": _clean(auction.get("closeAt")) or None,
-        "auction_lot_count": auction.get("numberOfLots") or auction.get("lotCount"),
-        "locale": locale_of(url),
-    }

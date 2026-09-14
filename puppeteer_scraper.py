@@ -53,14 +53,16 @@ from pyppeteer import launch, connect
 from captcha_solver import (detect_recaptcha_v3, detect_recaptcha_in_page,
                             reconcile_detections, solve_recaptcha,
                             CaptchaUnsolvable, INJECT_TOKEN_JS)
-from product_parser import (parse_products, parse_lot_page,
+from product_parser import (parse_products,
+                            pages_beyond_cap as parser_pages_beyond_cap,
                             PAGE_CAP as parser_page_cap,
-                            auction_metadata, auction_rows, SELECTORS,
+                            SELECTORS,
                             detect_bot_challenge, detect_block_marker,
                             page_url, paginates_by_url, listing_kind,
+                            vertical_of,
                             site_host, is_supported_host, total_results,
                             total_pages, search_header, unsupported_reason,
-                            served_by_dubizzle)
+                            CURRENCY, served_by_dubizzle)
 from output_writer import dedupe_by_key, finish_run, EXIT_API_ERROR
 import page_flow
 from page_flow import MIN_CARD_MATCHES
@@ -73,26 +75,34 @@ logger = logging.getLogger("puppeteer_scraper")
 
 ITEM_LINK_SELECTOR = page_flow.READY_SELECTOR_LISTING
 
-# The lowest PRICE coverage that is still healthy, per page kind. Not a
-# structured-price confirmation share: the two sources here are not two
-# views of one number. The SSR payload carries everything EXCEPT the money
-# and the hydrated card carries only the money, so `price_source` is
-# "next_data+dom" on a healthy row and there is nothing for a confirmation
-# threshold to describe. What IS worth a floor is
-# the share of rows that got a price — 95/95 on both search captures and
-# 60/60 on both category captures.
-# A price-coverage floor, and deliberately a low one: on an auction site a
-# missing price is usually CORRECT. Every blank price is a lot whose reserve
-# has not been met -- 57 of 57 across 13 captures carried
-# `reservePriceSet: True`, spread through the page rather than clustered at
-# its end. Measured coverage: 87-100% on 24-lot category and search pages,
-# 68% on a 130-lot auction page with a heavier reserve mix. The real check is
-# the INVARIANT (a null price must carry `reserve_price_set`), which lives in
-# the smoke suite; this floor only catches a page that hydrated not at all.
-PRICE_FLOOR = {"search": 50, "category": 50, "auction": 40, "lots": 40}
+# A price-coverage floor, PER VERTICAL, because on this site "how many rows
+# carry a price" is a different question in each section and a single number
+# would be wrong in both directions at once. Measured 2026-09-14 on one
+# captured page of each:
+#
+#   motors              26/26   100%     a car ad always names a price
+#   property-for-rent   35/35   100%     so does a rental, unless the agent
+#   property-for-sale   35/35   100%     sets `is_price_hidden`
+#   classified          25/25   100%
+#   community            1/25     4%     a services ad quotes on request
+#   jobs                 0/25     0%     a job ad publishes no salary at all
+#
+# So a floor of 90 is right for the first four and a floor of ANY positive
+# number would fire on every healthy jobs run. The zero entries are not
+# "unchecked" — they are the measurement, and they are written down so that
+# nobody later reads a 0% jobs run as a broken parse.
+PRICE_FLOOR = {
+    "motors": 90,
+    "property-for-rent": 90,
+    "property-for-sale": 90,
+    "classified": 90,
+    "community": 0,
+    "jobs": 0,
+    "jobs-wanted": 0,
+}
 
 # A page holding less than this share of the fullest page in the same run is
-# reported as thin. This site's page size is steady (24 lots on every page
+# reported as thin. This site's page size is steady (25 ads a page on
 # captured and every live run), but the LAST page of a listing is
 # legitimately short, so the bar stays loose.
 THIN_PAGE_SHARE = 0.6
@@ -378,7 +388,7 @@ def _driver(session):
     # No scroll primitives and no `page_height`, and that is measured rather
     # than omitted: three scrolls to the document's own bottom added zero
     # cards and left the page height unchanged on all three page kinds. Every
-    # listing page holds its whole 24 lots and paginates by URL.
+    # listing page holds its whole page of ads and paginates by URL.
     return {"count": count, "sleep": sleep, "content": content,
             "current_url": current_url}
 
@@ -388,15 +398,19 @@ def _content(session) -> Optional[str]:
 
 
 def _parse_for_mode(html: str, url: str, args, page_num: int = 1) -> List:
-    # `page_num` is threaded through rather than defaulted: `position`
-    # restarts at 1 on every page, so without the page number beside it a
-    # row from page 2 claims the same position as one from page 1. Mirrors
-    # playwright_scraper._parse_for_mode exactly.
-    if args.mode == "lot":
-        row = parse_lot_page(html, url, category=args.category)
-        return [row] if row is not None else []
-    if args.mode == "auctions":
-        return auction_rows(html, url, page=page_num)
+    """Rows for this page, always as a list.
+
+    One mode, and the indirection is kept anyway: every caller downstream —
+    dedupe, merge, coverage logging, the writers — works on one shape, and
+    the family's siblings call the same helper, so a future second mode is a
+    change here rather than in five call sites.
+
+    `page_num` is threaded through rather than defaulted, because `position`
+    restarts at 1 on every page: without the page number beside it, a row
+    from page 2 claims the same position as one from page 1 and the two are
+    indistinguishable in the output. A sibling repo's first live run wrote
+    120 rows all labelled page 1 for exactly that reason (§18).
+    """
     return parse_products(html, url, page=page_num, category=args.category)
 
 
@@ -419,7 +433,7 @@ def _next_page_candidates(session, page_num: int) -> List[str]:
     """The site's own next-page link, resolved, or None.
 
     Returns EVERY candidate, filtered by page_flow to the ones that really do
-    paginate this listing: a shop front advertises its REVIEWS pagination
+    paginate this listing: the SEO chip rail advertises other listings
     alongside its items, and following that one returns rows from the wrong
     listing while reporting success.
 
@@ -567,7 +581,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
                         "filled in (%d bytes, empty cards) — waiting up to "
                         "%.0fs for the prices rather than spending a retry.",
                         page_num, len(html), wait_timeout / 1000)
-            need = page_flow.min_matches(args.mode, page_flow.expected_lots(html))
+            need = page_flow.min_matches(args.mode, page_flow.expected_cards(html))
             found = page_flow.wait_for_count(
                 d["count"], d["sleep"], page_flow.ready_selector(args.mode),
                 need, wait_timeout)
@@ -661,7 +675,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         # 95 after one scroll on the measured search URL.
         selector = page_flow.ready_selector(args.mode)
         threshold = page_flow.min_matches(args.mode,
-                                          page_flow.expected_lots(html))
+                                          page_flow.expected_cards(html))
         # A POLL, not waitForFunction: a string handed to the browser is
         # refused outright by a CSP without `unsafe-eval`, and this one only
         # happens to allow it. See page_flow.wait_for_count.
@@ -677,16 +691,10 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             # different thing entirely, and on this site it is usually just
             # slow rather than absent, because the row is parsed out of the
             # page's JSON-LD and not out of the buy box.
-            if args.mode == "lot":
-                logger.info("The product name did not paint in time. That is "
-                            "not fatal: a detail row is read from the page's "
-                            "own Apollo cache and its price meta, both in the "
-                            "first response, so the parse below decides.")
-            else:
-                logger.info("No listing tiles appeared in time. If this URL "
-                            "is a /p/<slug> discovery hub or one page past "
-                            "the end of a listing, that is the expected "
-                            "answer and the run will report 0 rows (exit 4).")
+            logger.info("No listing tiles appeared in time. If this URL "
+                        "is a hub page or one page past "
+                        "the end of a listing, that is the expected "
+                        "answer and the run will report 0 rows (exit 4).")
 
         html = d["content"]() or html
 
@@ -698,11 +706,12 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         logger.info("Saved the snapshot the parser sees to %s (%d bytes).",
                     dump_path, len(html))
 
-    # Only for a state page_flow already counts as BLOCKED. An EMPTY
-    # page is a correct answer, and a live run of a /p/<slug> hub
-    # reported exit 3 on a page the site had plainly served because the
-    # hub's own performance script names `akamaihd.net`. Mirrors
-    # playwright_scraper exactly.
+    # Only when the page is NOT already content. A challenge marker on a page
+    # whose ads have rendered guards nothing — and over --cdp-endpoint the
+    # Scraping Browser's own auto-solve extension injects such markers into
+    # every page it loads, which is why the scan strips extension <script>
+    # tags first. Only for a state page_flow already counts as BLOCKED; an
+    # EMPTY page is a correct answer. Mirrors playwright_scraper exactly.
     vendor = (detect_bot_challenge(html, url=page.url)
               if page_flow.counts_as_blocked(state) else None)
     if vendor:
@@ -726,9 +735,6 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     products = _parse_for_mode(html, page.url, args, page_num)
     logger.info("Parsed %d row(s) from page %d.", len(products), page_num)
 
-    if args.mode == "lot":
-        outcome.auction_facts = auction_metadata(html, page.url)
-
     if args.mode == "listing" and page_num == 1:
         # The payload states the listing's own total, so the arithmetic
         # completeness check is available here and the number is recorded
@@ -741,8 +747,12 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     if products and args.mode == "listing":
         priced = sum(1 for p in products if p.price is not None)
         share = 100.0 * priced / len(products)
-        kind = listing_kind(page.url)
+        kind = vertical_of(page.url) or listing_kind(page.url)
         floor = PRICE_FLOOR.get(kind, 0)
+        # Reported every time, not only when it looks wrong, so a consumer
+        # gets the number rather than a threshold someone guessed. A 0% jobs
+        # page is the site's behaviour, not a failure, which is why the floor
+        # is per-vertical and why the figure is printed either way.
         logger.info("Price coverage on page %d (%s page): %d/%d (%.0f%%); the "
                     "floor for this page kind is %d%%.",
                     page_num, kind, priced, len(products), share, floor)
@@ -759,10 +769,10 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         # one number twice. What IS worth reporting is how many rows carry an
         # image url, which comes from the payload rather than an <img> tag.
         with_image = sum(1 for p in products if p.image_url)
-        logger.info("Lot images on page %d: %d/%d (%.0f%%). Read from the "
+        logger.info("Photo coverage on page %d: %d/%d (%.0f%%). Read from the "
                     "payload rather than an <img> tag, so this is not a "
                     "rendering measure: a null means the site published no "
-                    "image url for that lot.",
+                    "photo for that ad.",
                     page_num, with_image, len(products),
                     100.0 * with_image / len(products))
 
@@ -802,7 +812,7 @@ def scrape(args) -> int:
     # single-page made `--mode shop --pages 2` fetch one page and report
     # "complete", which is the silent-success failure this family exists to
     # avoid. Found on the first live shop run.
-    stop_reason = "single_page_mode" if args.mode in ("lot", "auctions") else "completed"
+    stop_reason = "completed"
 
     pool = proxy_pool_from_args(args)
     if pool and args.cdp_endpoint:
@@ -952,11 +962,13 @@ def scrape(args) -> int:
             if beyond:
                 logger.warning(
                     "This listing is %d page(s) deeper than the site will "
-                    "address: it caps ?page= at %d, and a request past that "
-                    "returns the capped page's own lots under HTTP 200 rather "
-                    "than failing. Narrow the listing with the site's own "
-                    "filters, or walk the auctions index instead - an auction "
-                    "page carries every one of its lots at once.",
+                    "address: it publishes its own page count and stops "
+                    "there, and a request past it answers HTTP 200 with "
+                    "totalHits 0 rather than failing. A motors listing of "
+                    "34,619 ads publishes 400 pages of 25, so two thirds of "
+                    "it cannot be reached through pagination at all. Narrow "
+                    "the listing with the site's own filters — by emirate, "
+                    "make, price band or year — and run each slice.",
                     beyond, parser_page_cap)
 
 
@@ -971,27 +983,18 @@ def scrape(args) -> int:
     # in --mode listing, because on an infinitely-scrolling site those are
     # what say how much of the listing the run actually saw.
     extra = None
-    if args.mode == "lot":
-        first = next((o for o in outcomes if o.ok and o.shop_facts), None)
-        if first is not None and first.shop_facts:
-            extra = dict(first.shop_facts)
-            logger.info("Shop: %s (id %s, /%s).",
-                        extra.get("shop_name") or "?",
-                        extra.get("shop_id") or "?",
-                        extra.get("shop_slug") or "?")
-    else:
-        scrolls = {o.page_num: o.scroll for o in outcomes if o.scroll}
-        headers = {o.page_num: o.header for o in outcomes if o.header}
-        unsettled = sorted(n for n, s in scrolls.items()
-                           if s and not s.get("settled"))
-        if scrolls or headers:
-            extra = {"scroll": scrolls, "result_header": headers,
-                     "pages_still_growing": unsettled}
-        if unsettled:
-            logger.warning(
-                "Page(s) %s were still loading more products when the scroll "
-                "budget ran out, so their row counts are floors rather than "
-                "the listing.", ", ".join(str(n) for n in unsettled))
+    scrolls = {o.page_num: o.scroll for o in outcomes if o.scroll}
+    headers = {o.page_num: o.header for o in outcomes if o.header}
+    unsettled = sorted(n for n, s in scrolls.items()
+                       if s and not s.get("settled"))
+    if scrolls or headers:
+        extra = {"scroll": scrolls, "result_header": headers,
+                 "pages_still_growing": unsettled}
+    if unsettled:
+        logger.warning(
+            "Page(s) %s were still loading more products when the scroll "
+            "budget ran out, so their row counts are floors rather than "
+            "the listing.", ", ".join(str(n) for n in unsettled))
 
     return finish_run(all_rows, args.out, args.format, args.allow_empty,
                       blocked=blocked, stop_reason=stop_reason,
@@ -1004,23 +1007,24 @@ def scrape(args) -> int:
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="dubizzle auction scraper (pyppeteer edition). pyppeteer is "
+        description="dubizzle UAE classifieds scraper (pyppeteer edition). pyppeteer is "
                     "effectively unmaintained — playwright_scraper.py is the "
                     "primary engine.")
     p.add_argument("--url", default=None,
-                   help="A dubizzle URL: /{loc}/c/{id}-{slug}, /{loc}/s?q=..., "
-                        "/p/<cat>/<sub>/<subsub>, or /{shop}/{slug} with "
-                        "--mode product. Required, unless DUBIZZLE_URL is "
-                        "set in the environment or in .env.")
-    p.add_argument("--mode", choices=["listing", "lot", "auctions"],
+                   help="A dubizzle UAE listing URL — a category grid on "
+                        "uae.dubizzle.com, such as /motors/used-cars/ or "
+                        "/property-for-rent/residential/apartmentflat/. "
+                        "Prefix the path with /ar for Arabic. Required, "
+                        "unless DUBIZZLE_URL is set in the environment or in "
+                        ".env.")
+    p.add_argument("--mode", choices=["listing"],
                    default="listing",
-                   help="listing (default) or product. product reads one "
-                        "/{shop}/{slug} page out of its own Apollo cache and "
-                        "adds the site's real product id, the EXACT sold "
-                        "count, the review count, the condition and the "
-                        "shipping weight — the columns a listing row cannot "
-                        "carry. No --pages in product mode. There is "
-                        "deliberately no shop mode; see playwright_scraper.")
+                   help="listing (the only mode): a category grid, 25 ads a "
+                        "page on motors, classified, jobs and community and "
+                        "35 on both property indexes. There is deliberately "
+                        "no detail-page mode — an individual ad's markup has "
+                        "not been measured, and a mode that ships untested "
+                        "is worse than one that is absent.")
     p.add_argument("--category", default=None, help="Label to tag output rows with.")
     p.add_argument("--pages", type=int, default=1, help="Listing pages to crawl")
     p.add_argument("--delay", type=float, default=2.0, help="Delay between pages, seconds")
@@ -1096,10 +1100,6 @@ def parse_args():
     if not args.url:
         p.error("no --url given, and DUBIZZLE_URL is not set in the environment "
                 "or in .env.")
-    if args.mode in ("lot", "auctions") and args.pages != 1:
-        logger.warning("--pages %d is ignored in --mode %s: there is one page "
-                       "to read.", args.pages, args.mode)
-        args.pages = 1
     if not is_supported_host(args.url):
         # Refused rather than attempted: the selectors, the sku pattern and
         # the pagination convention are all this site's, so another marketplace
@@ -1110,22 +1110,16 @@ def parse_args():
             p.error(f"{site_host(args.url)} {why}.")
         p.error(f"{site_host(args.url) or args.url!r} is not dubizzle. This "
                 f"scraper reads dubizzle.com, the site's only "
-                f"storefront — one language, one currency, no per-country "
-                f"hostname and no locale prefix.")
+                f"platform — the UAE one.")
     kind = listing_kind(args.url)
-    if args.mode == "lot" and kind != "lot":
-        p.error(f"--mode product expects a /{{shop}}/{{slug}} product URL; "
-                f"{args.url!r} is a {kind} page.")
-    if args.mode == "listing" and kind == "lot":
-        p.error(f"{args.url!r} is a single product page. Use --mode product "
-                f"for it, or pass a /search?st=product&q=... or "
-                f"/p/<cat>/<sub>/<subsub> URL.")
-    if args.mode == "listing" and kind == "hub":
+    if args.mode == "listing" and kind == "home":
         logger.warning(
-            "%s is a /p/<slug> DISCOVERY HUB, not a listing — no product "
-            "grid, only banners and recommendation carousels — so this run "
-            "will return 0 rows and exit 4. The real listings are one or two "
-            "levels down: /p/<cat>/<sub>[/<subsub>].", args.url)
+            "%s is a HUB PAGE, not a listing. It carries category tiles "
+            "and promo rails and no result grid, so this run will return 0 "
+            "rows and exit 4. The listings are one or two levels down — "
+            "/motors/used-cars/, /classified/electronics/televisions/, "
+            "/jobs/accounting-finance/ — and every hub links to its own.",
+            args.url)
     return args
 
 
