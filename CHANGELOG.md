@@ -41,7 +41,7 @@ layout survives.
   `.env` loading with documented precedence (`env_config.py`), captcha
   detection and solving (`captcha_solver.py`), 2Captcha fingerprints
   (`fingerprint_client.py`) and a two-run differ (`diff_runs.py`).
-- **510 offline checks** (`smoke_test.py`, wrapped for `pytest`), with every
+- **520 offline checks** (`smoke_test.py`, wrapped for `pytest`), with every
   fixture cut from a real capture by `make_fixtures.py` and verified to parse
   identically to the untrimmed original before being committed.
 - **CI**: the offline suite on the oldest and newest supported Python, a
@@ -116,7 +116,17 @@ found them:
   branch to execute.
 - The repo's own secret check flagged this site's public ad identifiers — a
   32-hex string is both an API key's shape and every dubizzle ad's id — so it
-  failed on its own repository. It now subtracts the `---{ad id}` shape
-  before scanning.
+  failed on its own repository. It now subtracts that identifier in all three
+  contexts the site publishes it in.
+- **The secret check scanned only six file suffixes**, so it had never opened
+  `fixtures_generated.json`, `sample_output.json` or `sample_output.csv` —
+  and it could not see a page dump at all, because `--dump-html live_results`
+  writes `live_results.page1`, a name with no suffix it knew. Two 1.5 MB
+  dumps were committed by the release merge before this was found. The scan
+  now reads everything git tracks (plus anything new that is not ignored) at
+  any suffix, a raw capture is refused by SHAPE whether or not its content
+  looks dangerous, and the history scan reports any capture that has ever
+  been committed so the decision is taken once, in writing, before
+  publication.
 
 [0.1.0]: https://github.com/2scraper/dubizzle-scraper/releases/tag/v0.1.0

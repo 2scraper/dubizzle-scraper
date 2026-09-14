@@ -412,7 +412,7 @@ All 2026-09-14, through a UAE residential exit unless stated.
 | Asset-host references, served page vs refusal | 126–2,571 vs **0** |
 | Scroll rounds needed | none — captures taken with 0 scrolls matched those taken with 4 |
 | Block-page shapes seen | 1,160 B (HTTP 403) and 6,183 B (HTTP **200**) |
-| Offline checks | 510 |
+| Offline checks | 520 |
 
 Everything except the DOM cross-check comes out of `__NEXT_DATA__`, which is
 in the first response and needs no JavaScript, so a readiness wait that times
@@ -464,7 +464,7 @@ to compare, not the positions.
 ## Testing
 
 ```bash
-python3 smoke_test.py        # 510 offline checks, no engine library needed
+python3 smoke_test.py        # 520 offline checks, no engine library needed
 pytest                       # the same checks, wrapped as one test
 python3 env_config.py        # what config was picked up, without secrets
 python3 .github/ci_checks.py --all          # what CI runs
