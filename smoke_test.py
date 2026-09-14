@@ -2038,37 +2038,68 @@ def test_env_config():
     ok &= check("no env variable is mapped onto --out (it has a default)",
                 "out" not in env_config.ENV_KEYS.values())
 
-    # A COPIED .env.example MUST READ AS UNSET, and a literal-only check is
-    # not enough to make that true. This repo documents its two credentialled
-    # URLs the way the vendor does, with the parts you fill in written in
-    # braces:
+    # THE ROUND TRIP, on the file this repo actually ships rather than on
+    # strings written here. `cp .env.example .env` and run: every credential
+    # must read as unset, and the one non-credential default must survive.
     #
-    #     ws://{login}-zone-scraping_browser-…-pid-{profileId}:{password}@…
-    #     http://{user}:{password}@ap.proxy.2captcha.com:2334
-    #
-    # Before the brace check existed the loader reported both of those as
-    # CONFIGURED, so `cp .env.example .env` and a run connected to
-    # cb.2captcha.com with the string `{login}-zone-…` as its username and
-    # got a 401 — a confusing failure a long way from its cause, which is
-    # what §3's rule exists to prevent.
-    for raw in ('ws://{login}-zone-scraping_browser-country-id-pid-'
+    # Hand-written placeholder strings are not enough, and that is why this
+    # exists: a sibling repo's literal-only check passed while the SHIPPED
+    # example's two credentialled URLs read as CONFIGURED, so a copied
+    # example connected to cb.2captcha.com with `{login}-zone-…` as its
+    # username and got a 401 a long way from its cause.
+    with tempfile.TemporaryDirectory() as d:
+        copied = os.path.join(d, ".env")
+        with open(os.path.join(REPO_ROOT, ".env.example"), encoding="utf-8") as src:
+            example_text = src.read()
+        with open(copied, "w", encoding="utf-8") as dst:
+            dst.write(example_text)
+
+        class Copied:
+            twocaptcha_key = None
+            url = None
+            cdp_endpoint = None
+            proxy = None
+
+        saved = {k: os.environ.pop(k, None) for k in env_config.ENV_KEYS}
+        try:
+            args = Copied()
+            env_config.load_env(copied)
+            env_config.apply(args, quiet=True)
+            ok &= check("a copied .env.example leaves every CREDENTIAL unset",
+                        args.twocaptcha_key is None
+                        and args.cdp_endpoint is None
+                        and args.proxy is None)
+            ok &= check("...and leaves the target URL usable, so a copied "
+                        "example still runs",
+                        isinstance(args.url, str)
+                        and args.url.startswith("https://uae.dubizzle.com/"))
+            ok &= check("the example names no variable the loader does not "
+                        "read", not env_config.unknown_keys(copied))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    # And the placeholder shapes themselves, pinned so a future example that
+    # writes a credential differently is still caught. Any value carrying
+    # `{...}` braces is unset, whatever else it looks like.
+    for raw in ('ws://{login}-zone-scraping_browser-country-ae-pid-'
                 '{profileId}:{password}@cb.2captcha.com:9222',
-                'http://{user}:{password}@ap.proxy.2captcha.com:2334',
+                'http://{user}:{password}@ae.proxy.2captcha.com:2334',
                 'your_2captcha_api_key_here'):
-            ok &= check("a placeholder value reads as unset: %s..." % raw[:34],
-                        _placeholder_reads_unset(raw))
+        ok &= check("a placeholder value reads as unset: %s..." % raw[:34],
+                    _placeholder_reads_unset(raw))
     # ...and a REAL value still reads as set, or the guard has eaten the
     # feature it was protecting.
     ok &= check("a real value is not mistaken for a placeholder",
                 _placeholder_reads_unset(
-                    "ws://acct1-zone-scraping_browser-country-id-pid-p1:"
+                    "ws://acct1-zone-scraping_browser-country-ae-pid-p1:"
                     "secret@cb.2captcha.com:9222") is False)
-    # The one variable a copied example leaves USABLE is the target URL,
-    # which carries no credential and is a working default.
     ok &= check("the example's default URL is usable as-is",
                 _placeholder_reads_unset(
-                    "https://uae.dubizzle.com/motors/used-cars/"
-                    "kopi-bubuk") is False)
+                    "https://uae.dubizzle.com/motors/used-cars/") is False)
 
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, ".env")
@@ -2599,6 +2630,113 @@ def _undefined_names(path):
     return missing
 
 
+def test_public_names_have_consumers():
+    group("no public name is dead code or unenforced policy")
+    ok = True
+    # §17 #5: grep every public name in a shared module for a consumer
+    # outside its own module, then READ what comes back. Running that over
+    # this repo returned eleven names; every one of them is consumed by a
+    # function in its own module, and none is dead. The ones that encode SITE
+    # POLICY rather than plumbing are pinned here, so deleting one fails
+    # instead of quietly changing behaviour — which is the failure mode a
+    # policy constant has, and it is harder to see than dead code because the
+    # prose beside it reads like enforcement.
+    ok &= check("the browse hosts and the emirate hosts are different sets",
+                set(product_parser.BROWSE_HOSTS)
+                & set(product_parser.EMIRATE_HOSTS) == set()
+                and set(product_parser.HOSTS)
+                == set(product_parser.BROWSE_HOSTS)
+                | set(product_parser.EMIRATE_HOSTS))
+    ok &= check("the OLX-platform hosts are listed, not merely refused by "
+                "accident",
+                {"dubizzle.com.bh", "dubizzle.com.om", "dubizzle.com.eg"}
+                <= set(product_parser.OLX_PLATFORM_HOSTS))
+    ok &= check("and none of them is also a supported host",
+                not set(product_parser.OLX_PLATFORM_HOSTS)
+                & set(product_parser.HOSTS))
+    ok &= check("the page parameter is the one page_url builds with",
+                product_parser.PAGE_PARAM == "page"
+                and "%s=2" % product_parser.PAGE_PARAM in page_url(LISTING_URL, 2))
+    ok &= check("only a listing is a paginated kind",
+                product_parser.PAGINATED_KINDS == ("listing",))
+    ok &= check("campaign parameters are named, and stripping uses them",
+                "utm_source" in product_parser.TRACKING_PARAMS
+                and "utm_source" not in strip_tracking(
+                    LISTING_URL + "?utm_source=x"))
+    ok &= check("jsonld_blocks reads every block on the page, not only the "
+                "ItemList one",
+                len(product_parser.jsonld_blocks(fx("motors_p1")[0])) >= 1)
+    ok &= check("the readiness timeout is what content_timeout_ms returns",
+                page_flow.content_timeout_ms("listing")
+                == page_flow.CONTENT_TIMEOUT_MS)
+    ok &= check("SOURCE_DEFAULT is what a row's `source` actually says",
+                Product().source == "dubizzle.com")
+    return ok
+
+
+def test_log_format_strings_match_their_args():
+    group("every log call's placeholders match its arguments")
+    ok = True
+    # A %-format string and its argument list drift the moment someone edits
+    # the prose, and the failure is invisible until that branch runs: Python's
+    # logging swallows the TypeError, prints "--- Logging error ---" and the
+    # RAW TEMPLATE, and the run carries on. A live property run printed
+    # "This listing is %d page(s) deeper..." for exactly that reason, after a
+    # rewrite dropped one placeholder and left both arguments.
+    #
+    # Counted rather than formatted: this walks the AST, so it needs no
+    # branch to execute and catches the ones a live run never reaches.
+    import ast as _ast
+    for name in ENGINE_FILES + ("product_parser.py", "page_flow.py",
+                                "output_writer.py", "proxy_pool.py",
+                                "env_config.py", "captcha_solver.py",
+                                "scraper_api_client.py", "diff_runs.py",
+                                "fingerprint_client.py"):
+        path = os.path.join(REPO_ROOT, name)
+        if not os.path.exists(path):
+            continue
+        tree = _ast.parse(open(path, encoding="utf-8").read())
+        bad = []
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, _ast.Attribute)
+                    and fn.attr in ("debug", "info", "warning", "error",
+                                    "exception", "critical")
+                    and isinstance(fn.value, _ast.Name)
+                    and fn.value.id == "logger"):
+                continue
+            if not node.args:
+                continue
+            template = node.args[0]
+            # Only literal templates can be counted; a variable one is the
+            # caller's problem and is rare here.
+            parts = []
+            if isinstance(template, _ast.Constant) and isinstance(template.value, str):
+                parts = [template.value]
+            elif isinstance(template, _ast.JoinedStr):
+                continue        # an f-string interpolates itself
+            else:
+                continue
+            text = "".join(parts)
+            # `%%` is a literal percent and consumes no argument.
+            holders = len(re.findall(r"%[-+ #0-9.*]*[diouxXeEfFgGcrsa%]",
+                                     text.replace("%%", "")))
+            supplied = len([a for a in node.args[1:]
+                            if not isinstance(a, _ast.Starred)])
+            has_star = any(isinstance(a, _ast.Starred) for a in node.args[1:])
+            if has_star:
+                continue
+            if holders != supplied:
+                bad.append("%s:%d %d placeholder(s), %d argument(s)"
+                           % (name, node.lineno, holders, supplied))
+        ok &= check("%s: every logger call's placeholders match its arguments%s"
+                    % (name, "" if not bad else " -- " + "; ".join(bad[:3])),
+                    not bad)
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -2636,6 +2774,8 @@ def main() -> int:
     ok &= test_no_undefined_names()
     ok &= test_dockerfile_copies_what_it_runs()
     ok &= test_sample_output()
+    ok &= test_public_names_have_consumers()
+    ok &= test_log_format_strings_match_their_args()
 
     print()
     if _failures:

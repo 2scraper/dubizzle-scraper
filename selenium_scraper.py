@@ -945,7 +945,7 @@ def scrape(args) -> int:
                     "it cannot be reached through pagination at all. Narrow "
                     "the listing with the site's own filters — by emirate, "
                     "make, price band or year — and run each slice.",
-                    beyond, parser_page_cap)
+                    beyond)
 
 
     ok_pages = [o for o in outcomes if o.ok]

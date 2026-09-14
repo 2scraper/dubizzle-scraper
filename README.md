@@ -400,15 +400,19 @@ All 2026-09-14, through a UAE residential exit unless stated.
 | Motors listing total / pages the site addresses | 34,619 ads / 400 pages — 985 pages beyond the cap |
 | Property listing total / pages | 206,372 ads / 2,286 pages |
 | Live run, Playwright, 2 pages of used cars | **52 rows, 52 distinct sku, exit 0, status complete** |
+| Live run, Playwright, 2 pages of apartments for rent | **70 rows, exit 0, status complete** |
+| Live run, Playwright, 1 page of used cars in **Arabic** | **26 rows, brand 26/26, exit 0** |
+| Live run, Playwright, 3 pages of televisions | **75 rows, exit 0, status complete** |
 | Live run, pyppeteer, 2 pages of televisions | **50 rows, exit 0, status complete** |
-| Price coverage on those runs | 26/26 and 25/25 per page |
+| Across all five live runs | 273 rows, every `sku` unique, every `page`+`position` pair unique, every priced row carrying AED and no unpriced row carrying one |
+| Price coverage on those runs | 26/26, 35/35 and 25/25 per page |
 | Column coverage on the motors run | price, currency, brand, city, location, listing_id, uuid, short_url, attributes, posted_at, bumped_at, image, year, kilometers: 52/52 · seller_name 43/52 · seller_kind 50/52 |
 | JSON-LD ↔ payload agreement (motors, property) | 26/26 and 35/35 ads, no disagreement |
 | DOM-only re-parse vs payload | 26, 35 and 25 ads, same skus, **0 price disagreements** |
 | Asset-host references, served page vs refusal | 126–2,571 vs **0** |
 | Scroll rounds needed | none — captures taken with 0 scrolls matched those taken with 4 |
 | Block-page shapes seen | 1,160 B (HTTP 403) and 6,183 B (HTTP **200**) |
-| Offline checks | 485 |
+| Offline checks | 510 |
 
 Everything except the DOM cross-check comes out of `__NEXT_DATA__`, which is
 in the first response and needs no JavaScript, so a readiness wait that times
@@ -460,7 +464,7 @@ to compare, not the positions.
 ## Testing
 
 ```bash
-python3 smoke_test.py        # 485 offline checks, no engine library needed
+python3 smoke_test.py        # 510 offline checks, no engine library needed
 pytest                       # the same checks, wrapped as one test
 python3 env_config.py        # what config was picked up, without secrets
 python3 .github/ci_checks.py --all          # what CI runs

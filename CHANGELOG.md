@@ -41,7 +41,7 @@ layout survives.
   `.env` loading with documented precedence (`env_config.py`), captcha
   detection and solving (`captcha_solver.py`), 2Captcha fingerprints
   (`fingerprint_client.py`) and a two-run differ (`diff_runs.py`).
-- **485 offline checks** (`smoke_test.py`, wrapped for `pytest`), with every
+- **510 offline checks** (`smoke_test.py`, wrapped for `pytest`), with every
   fixture cut from a real capture by `make_fixtures.py` and verified to parse
   identically to the untrimmed original before being committed.
 - **CI**: the offline suite on the oldest and newest supported Python, a
@@ -109,6 +109,11 @@ found them:
   site in Indonesia.
 - `page_flow.BLOCK_RETRIES_WITH_POOL` was documented policy that nothing
   read. It is now the default for `--proxy-block-retries`.
+- A `logger.warning` whose format string had one placeholder and two
+  arguments printed its raw template on a real property run — Python's
+  logging swallows that TypeError and carries on. The suite now walks every
+  module's AST and counts placeholders against arguments, which needs no
+  branch to execute.
 - The repo's own secret check flagged this site's public ad identifiers — a
   32-hex string is both an API key's shape and every dubizzle ad's id — so it
   failed on its own repository. It now subtracts the `---{ad id}` shape
