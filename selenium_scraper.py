@@ -596,12 +596,28 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         # so a different exit is the only thing that plausibly changes the
         # outcome.
         if block_attempt < block_retries:
-            logger.warning("Page %d came back as %s from %s — retrying from "
-                           "another exit (%d/%d).", page_num, state,
-                           mask(pool.current), block_attempt + 1, block_retries)
-            pool.advance(f"{state} on page {page_num}")
-            session.relaunch()
-            d = _driver(session)
+            if pool is not None:
+                logger.warning("Page %d came back as %s from %s — retrying "
+                               "from another exit (%d/%d).", page_num, state,
+                               mask(pool.current), block_attempt + 1,
+                               block_retries)
+                pool.advance(f"{state} on page {page_num}")
+                session.relaunch()
+                d = _driver(session)
+            else:
+                # No pool, so nowhere else to go — but a plain re-fetch does
+                # clear this sometimes, and this branch is REACHABLE here:
+                # `page_flow.BLOCK_RETRIES_WITHOUT_POOL` is 1 on this site,
+                # against 0 in the sibling repo this engine was ported from,
+                # and `mask(pool.current)` on a None pool took a live run
+                # down with an AttributeError the moment it was. Mirrors
+                # playwright_scraper exactly.
+                pause = args.retry_delay * (block_attempt + 1)
+                logger.warning("Page %d came back as %s — re-fetching through "
+                               "the same access path in %.1fs (%d/%d).",
+                               page_num, state, pause, block_attempt + 1,
+                               block_retries)
+                time.sleep(pause)
 
     if load_failed:
         logger.error("Gave up loading %s after %d attempt(s).", url, args.retries)
@@ -621,10 +637,14 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             f.write(html or "")
         logger.error(
             "The site did not serve this request — %d bytes, %s the site's "
-            "own asset host, saved to %s. There is no challenge to solve. "
-            "What clears it, measured 2026-09-10: a HEADFUL browser, and the "
-            "exit address does not matter (four residential exits and one "
-            "returned identical pages) — a datacentre address gets nothing. "
+            "own asset host, saved to %s. There is no challenge on the "
+            "page to solve. What clears it, measured 2026-09-14: an exit "
+            "IN THE UAE. A European residential exit was refused with HTTP "
+            "403 and a Finnish datacentre exit with a 'Pardon Our "
+            "Interruption' page under HTTP 200, headful and headless alike, "
+            "while a UAE residential exit was served the full catalogue by a "
+            "headless browser. So --proxy with region-ae, or --cdp-endpoint "
+            "with country-ae — not a bigger pool of the wrong addresses. "
             "Note this engine cannot use an authenticated remote CDP endpoint "
             "or an authenticated proxy; see the README's engine limits. This "
             "is exit 3, distinct from a genuinely empty result (exit 4).",

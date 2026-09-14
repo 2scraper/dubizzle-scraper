@@ -944,17 +944,19 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         logger.error(
 
             "The site did not serve this request — %d bytes, %s the site's "
-            "own asset host, saved to %s. On this site a refusal is a 394-byte "
-            "\"Access Denied\" with no vendor name and nothing to solve, and "
-            "it is triggered by the browser being headless rather than by the "
-            "address: no interstitial, no "
-            "vendor marker, so there is no challenge to solve and no key "
-            "would help. What clears it, measured 2026-09-10: a residential "
-            "exit. The country does not matter — an Indonesian and a US "
-            "residential exit returned identical pages — but a datacentre "
-            "address gets nothing. Use --cdp-endpoint, or a residential "
-            "--proxy. This is exit 3, distinct from a genuinely empty result "
-            "(exit 4).%s",
+            "own asset host, saved to %s. Imperva fronts this site and its "
+            "refusal takes two shapes: a 1,160-byte iframe page whose only "
+            "text is \"Request unsuccessful. Incapsula incident ID\", and a "
+            "6,183-byte \"Pardon Our Interruption\" page served with HTTP "
+            "**200** — so the status code is not the signal and there is no "
+            "challenge on the page to solve. What clears it, measured "
+            "2026-09-14: an exit IN THE UAE. A European residential exit was "
+            "refused and a Finnish datacentre exit got the 200-with-no-"
+            "content page, headful and headless alike, while a UAE "
+            "residential exit was served the full 1.6 MB catalogue by a "
+            "headless browser. Use --proxy with region-ae, or --cdp-endpoint "
+            "with country-ae. This is exit 3, distinct from a genuinely "
+            "empty result (exit 4).%s",
             len(html or ""), "which references" if served else "with no "
             "reference to", debug_html,
             (f" Tried {block_retries + 1} exit(s)." if has_pool
