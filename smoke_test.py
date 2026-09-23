@@ -2917,6 +2917,58 @@ def test_x_debug_header_is_redacted():
     return ok
 
 
+def test_parse_is_gated_on_the_policy():
+    group("the engines read STATE_POLICY's parse column")
+    ok = True
+    # `should_parse` existed, was correct, and had NO consumer: every
+    # engine parsed whatever reached the parse line, so the `parse` column
+    # of STATE_POLICY decided nothing and an engine could disagree with the
+    # table — and with its twins — without anything noticing. That is the
+    # defect CLAUDE.md §17 names for constants, with a function instead.
+    #
+    # Measured across the family on 2026-09-23 by counting definitions
+    # against readers: 7 of 24 repos defined it and none called it.
+    import glob as _glob
+    engines = sorted(_glob.glob(os.path.join(REPO_ROOT, "*_scraper.py")))
+    ok &= check("there are engines to check (%d)" % len(engines), engines)
+    for path in engines:
+        name = os.path.basename(path)
+        text = open(path, encoding="utf-8").read()
+        if "_parse_for_mode" not in text:
+            continue
+        ok &= check("%s reads the parse decision from the policy" % name,
+                    "should_parse(" in text)
+        # And nothing parses unconditionally any more: a bare
+        # `products = _parse_for_mode(` is the shape that ignored the table.
+        ok &= check("%s does not parse unconditionally" % name,
+                    not re.search(r"products = _parse_for_mode\(", text))
+    # Every state the policy names must be answerable — a typo'd state name
+    # would make should_parse fall through to its default for ever.
+    for state in page_flow.STATE_POLICY:
+        ok &= check("should_parse answers for %r" % state,
+                    isinstance(page_flow.should_parse(state), bool))
+
+    # The live bug this repo had, pinned as a value: a page one past the
+    # end of a listing carries a recommendation rail, and reading it wrote
+    # a car that was not in the category.
+    import json as _json
+    _p = os.path.join(REPO_ROOT, "fixtures_generated.json")
+    if os.path.exists(_p):
+        _d = _json.load(open(_p, encoding="utf-8"))
+        _fx = _d.get("fixtures", _d)
+        _v = _fx.get("motors_past_end")
+        if _v:
+            _state = detect_page_state(_v["html"], 200, _v.get("url", ""))
+            ok &= check("a page past the end still classifies as empty",
+                        _state == "empty")
+            ok &= check("the policy says do not parse it",
+                        page_flow.should_parse(_state) is False)
+            ok &= check("...and the parser alone WOULD have yielded a row "
+                        "(so the gate is load-bearing)",
+                        len(parse_products(_v["html"], _v.get("url", ""))) > 0)
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -2925,6 +2977,7 @@ def main() -> int:
     # without checking that what it wanted actually happened.
     skips = []
 
+    ok &= test_parse_is_gated_on_the_policy()
     ok &= test_price_parsing()
     ok &= test_listing_values()
     ok &= test_null_price_is_the_site_and_not_the_parser()

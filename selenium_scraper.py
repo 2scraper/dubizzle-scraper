@@ -724,7 +724,24 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         return outcome
 
     final_url = d["current_url"]() or url
-    products = _parse_for_mode(html, final_url, args, page_num)
+    # Through the POLICY rather than unconditionally. `STATE_POLICY` is the
+    # one place that says which states are worth reading, and until now
+    # nothing consulted its `parse` column: the engines parsed whatever
+    # reached this line, so every state without an earlier `return` was
+    # read regardless of what the table said.
+    #
+    # # On THIS site that was a live bug, not a tidiness point. A page one past
+    # the end of a listing (`?page=401`) classifies as `empty`
+    # (parse: False) and still parses to one row — a 2020 Ferrari Portofino
+    # at AED 579,000, carried by the recommendation rail such a page shows.
+    # A run that walked off the end of a category therefore wrote a car
+    # that was not in it, with a real price and a real url.
+    #
+    # Measured across the family on 2026-09-23 by counting definitions
+    # against readers: 7 of 24 repos defined `should_parse` and none of
+    # them called it.
+    products = (_parse_for_mode(html, final_url, args, page_num)
+                if page_flow.should_parse(state) else [])
     logger.info("Parsed %d row(s) from page %d.", len(products), page_num)
 
     if args.mode == "listing" and page_num == 1:
