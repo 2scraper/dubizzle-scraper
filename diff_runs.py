@@ -8,15 +8,15 @@ the identifier the README already tells people to diff on for price
 monitoring and assortment tracking, but that nothing in this repo actually
 computed.
 
-    python3 diff_runs.py --old watches.2026-09-01.json \\
-                          --new watches.2026-09-07.json
+    python3 diff_runs.py --old cars.2026-09-01.json \\
+                          --new cars.2026-09-07.json
 
 Typical use is a scheduled re-run of one of the four scraper engines, kept
 under a dated filename, diffed against the previous one:
 
-    python3 playwright_scraper.py --url "$URL" --out "girls_$(date +%F)"
-    python3 diff_runs.py --old "girls_$(ls -t girls_*.json | sed -n 2p)" \\
-                          --new "girls_$(date +%F).json" --out diff.json
+    python3 playwright_scraper.py --url "$URL" --out "cars_$(date +%F)"
+    python3 diff_runs.py --old "$(ls -t cars_*.json | sed -n 2p)" \\
+                          --new "cars_$(date +%F).json" --out diff.json
 
 Four buckets, each keyed on sku:
 
@@ -46,13 +46,6 @@ from typing import Dict, List, Optional, Tuple
 
 from output_writer import UNIQUE_BY_SKU_MODES
 
-# `sold` is tracked alongside the price, and `sold_is_floor` with it, because
-# without the flag a `sold` change is unreadable: a tile's figure is a floor
-# the site rounded down ("100rb+ terjual" = 100_000) while a product page's
-# is exact (207785 for that same product). A monitor watching `sold` alone
-# would report a jump of 107,785 the moment someone diffed a listing run
-# against a product run, and none of it would be a sale.
-#
 # No `price_is_from` / `price_max` here: a dubizzle card prints one amount,
 # not a range. If variant pricing ever appears on a listing page, this is
 # where it goes.
@@ -97,14 +90,13 @@ def _within_tolerance(before: dict, after: dict, changes: dict,
     because the alternative is a comment inventing a reason. A sibling repo
     needs it: that site converts prices for a cross-border visitor and the
     exchange rate ticks between two runs of the same command. NO EQUIVALENT
-    CATAWIKI BEHAVIOUR WAS MEASURED — this site quotes euro to every
-    visitor, on all 18 locales including Japanese and Chinese and from every
-    exit tried, so a run holds no conversion and every cent of a difference
-    is a real move.
+    DUBIZZLE BEHAVIOUR WAS MEASURED — this site quotes AED to every visitor
+    (see the README's "Languages, hosts and currency"), so a run holds no
+    conversion and every dirham of a difference is a real move.
 
-    What DOES move here is the auction itself, and a tolerance is the wrong
-    instrument for that: a bid is not a small drift but a jump to whatever
-    the next bidder offered. The `lifecycle` bucket in `diff_products` is
+    What does move here without the price changing is an ad's placement —
+    in and out of the promoted Car of the Week slot — and a tolerance is the
+    wrong instrument for that. The `lifecycle` bucket in `diff_products` is
     the right one, and it is exact rather than approximate.
 
     So the flag stays available and DEFAULTS TO ZERO, which makes it inert
@@ -318,9 +310,9 @@ def _check_comparable(args) -> bool:
     #
     # The sibling repos guard cross-storefront diffs with `source`: eleven
     # country hostnames, so a run of one against another is refused on the
-    # hostname alone. dubizzle is ONE host with ONE currency — 18 locales as
-    # a path prefix, euro on every one of them, measured 2026-09-10 — so
-    # `source` is "dubizzle.com" on both sides and there is no storefront
+    # hostname alone. dubizzle is browsed on ONE host with ONE currency —
+    # two languages as a path prefix (`/ar`), AED on both — so
+    # `source` is the same on both sides and there is no storefront
     # split for it to catch.
     #
     # This check is therefore expected never to fire, and it is kept for one
@@ -345,11 +337,11 @@ def _check_comparable(args) -> bool:
     if len(set(currencies.values())) > 1:
         problems.append(
             f"the two runs quote different currencies ({currencies}). "
-            f"dubizzle quotes euro to every visitor — verified on 18 locales "
-            f"and every exit tried — so this should be impossible: either the "
+            f"dubizzle quotes AED to every visitor, in both languages, "
+            f"so this should be impossible: either the "
             f"site has grown a second currency or one of these runs invented "
             f"one, and either way every row's price is incomparable. "
-            f"`source` cannot catch it: it is 'dubizzle.com' on both sides.")
+            f"`source` cannot catch it: it is the same on both sides.")
 
     if not problems:
         return True
@@ -380,7 +372,7 @@ def parse_args():
                         "rate tick rather than a price change: reported "
                         "separately and ignored by --fail-on-change. Default 0 "
                         "(report every cent), which is what a dubizzle "
-                        "run wants: the site quotes IDR to every visitor, so "
+                        "run wants: the site quotes AED to every visitor, so "
                         "there is no conversion drift to absorb. The flag is "
                         "inherited from this scraper family; set it non-zero "
                         "only with a reason you can state.")

@@ -231,10 +231,6 @@ class PageOutcome:
     # whose grid was still growing when the budget ran out is partial, and a
     # run that reported it as complete would read as a shrinking catalogue.
     scroll: Optional[dict] = None
-    # In --mode product, the seller's own id/name/slug from the page's Apollo
-    # cache. Stored as the small dict rather than by keeping the page's HTML
-    # around: a detail page is 285 KB and a scrolled listing nearly 1 MB.
-    shop_facts: Optional[dict] = None
 
     @property
     def ok(self) -> bool:
@@ -615,8 +611,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
 
         # No interstitial-settling step, and its absence is measured rather
         # than an omission: this site has no interstitial. A refused request
-        # gets a 394-byte "Access Denied" with nothing on it to settle, and
-        # what triggers it is the browser being headless, not the address. See page_flow's "There is no block page".
+        # gets Imperva's refusal, with nothing on it to settle, and what
+        # triggers it is the exit's country, not the browser. See page_flow's
+        # notes above RETRY_ON_BLOCKED.
         #
         # The paid path is reached only for state "challenge", which no
         # capture of this site has ever produced. Wired up because a bot
@@ -680,12 +677,12 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     outcome.state = state
 
     if state == "blocked":
-        # There is no challenge on this site to solve. Akamai answers a
-        # refused request with HTTP 403 and a 394-byte "Access Denied" that
-        # carries a reference id and nothing else, so a 2Captcha key does not
-        # help and a REAL WINDOW does — not a better address. The dump is written even when empty: "0 bytes" is itself
-        # the diagnosis here, and a reader who finds no file cannot tell that
-        # from a run that never got this far.
+        # There is no challenge on this site to solve. Imperva answers a
+        # refused request with an HTTP 403 or a "Pardon Our Interruption"
+        # page and nothing to solve, so a 2Captcha key does not help and a
+        # UAE exit does. The dump is written even when empty: a reader who
+        # finds no file cannot tell an empty response from a run that never
+        # got this far.
         debug_html = f"{args.out}_page{page_num}_debug.html"
         with open(debug_html, "w", encoding="utf-8") as f:
             f.write(html or "")
@@ -849,11 +846,7 @@ def scrape(args) -> int:
     blocked = False
     # Both modes are one row per product, so `sku` is the key for both.
     dedupe_key = "sku"
-    # Only --mode product is single-page. A SHOP FRONT paginates exactly like
-    # a category listing — ?page=N, the same tiles — and treating it as
-    # single-page made `--mode shop --pages 2` fetch one page and report
-    # "complete", which is the silent-success failure this family exists to
-    # avoid. Found on the first live shop run.
+    # This repo has only --mode listing, which is never single-page.
     stop_reason = "completed"
 
     pool = proxy_pool_from_args(args)
@@ -1020,10 +1013,9 @@ def scrape(args) -> int:
                  if ok_pages else args.url)
 
     # One-per-run context, in the sidecar rather than repeated down a column.
-    # Mirrors the Playwright engine exactly: the seller's own facts in
-    # --mode product, and the scroll trace plus the page's own result header
-    # in --mode listing, because on an infinitely-scrolling site those are
-    # what say how much of the listing the run actually saw.
+    # Mirrors the Playwright engine exactly: the scroll trace and the page's
+    # own result header, where recorded, because those are what say how much
+    # of the listing the run actually saw.
     extra = None
     scrolls = {o.page_num: o.scroll for o in outcomes if o.scroll}
     headers = {o.page_num: o.header for o in outcomes if o.header}
@@ -1135,11 +1127,6 @@ def parse_args():
                         "code at all, so it is the build, not this engine). "
                         "Point it at a Chrome or Chromium of your own — "
                         "Playwright's, if you have it installed.")
-    # HEADFUL by default, a departure from every sibling repo and a measured
-    # one: Akamai refuses a headless browser here whatever the exit -- HTTP
-    # 403 and a 394-byte "Access Denied" from four residential exits and one
-    # datacentre address, against 200 and the full catalogue from those same
-    # addresses with a real window.
     # HEADLESS is the default, as in the rest of the family, and the
     # measurement behind that is about the EXIT rather than the window: every
     # live run of this repo was headless and was served the full catalogue —

@@ -173,11 +173,6 @@ class PageOutcome:
     # still growing when the round budget ran out is partial, and a run that
     # reported it as complete would read as a shrinking catalogue.
     scroll: Optional[dict] = None
-    # In --mode product, the seller's own id/name/slug read off the page's
-    # Apollo cache. Stored as the small dict rather than by keeping the
-    # page's HTML around: a detail page is 285 KB and a scrolled listing
-    # nearly 1 MB.
-    shop_facts: Optional[dict] = None
 
     @property
     def ok(self) -> bool:
@@ -550,11 +545,10 @@ def _connect_remote(pw, args):
     # Tried first when --cdp-endpoint is set; this script's own detect+solve
     # logic still runs as a fallback if the endpoint does not support it.
     # Note it does NOT cover this site's refusal, which is not a challenge:
-    # Akamai answers a headless browser with a 394-byte "Access Denied" that
-    # has nothing to solve on it, and a real window rather than a better
-    # address is the answer. No challenge has ever been observed here; this is
-    # wired
-    # up because one can appear between deploys.
+    # Imperva refuses an exit outside the UAE with nothing to solve on the
+    # page, and a UAE exit rather than a solve is the answer. No challenge
+    # has ever been observed here; this is wired up because one can appear
+    # between deploys.
     try:
         cdp_session = context.new_cdp_session(page)
         cdp_session.send("Captcha.setAutoSolve", {"autoSolve": True, "options": [{"type": "*"}]})
@@ -643,8 +637,9 @@ def handle_captcha_if_present(page, args) -> bool:
     about the variant and the parameters for one are rejected for the other.
 
     NOTE what this cannot help with. This site's refusal carries nothing to
-    solve — a 394-byte "Access Denied" — and it is triggered by the browser
-    being headless rather than by the address, so a 2Captcha key does nothing
+    solve — Imperva's 403 or its "Pardon Our Interruption" page — and it is
+    triggered by the exit's country rather than by the browser, so a
+    2Captcha key does nothing
     about the state a blocked run is most likely to meet, and
     `detect_page_state` reports that as "blocked" rather than "challenge"
     precisely so no solve is attempted or billed. No challenge has ever been
@@ -839,9 +834,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
 
         # No interstitial-settling step here, and its absence is measured
         # rather than an omission. This site has no interstitial to settle: a
-        # refused request gets a 394-byte "Access Denied" with no markup at
-        # all, so there is nothing to wait out and nothing to reclassify. See
-        # page_flow's "There is no block page".
+        # refused request gets Imperva's refusal, which does not clear itself
+        # on the page, so there is nothing to wait out and nothing to
+        # reclassify. See page_flow's notes above RETRY_ON_BLOCKED.
         #
         # The paid path is reached only for state "challenge", which NO
         # capture of this site has ever produced. It is wired up because a
@@ -913,15 +908,15 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     if state == "blocked":
         # What a caller needs to know here is that there is nothing to solve.
         # This site does not send a challenge or a captcha to a request it
-        # refuses: Akamai answers with HTTP 403 and a 394-byte "Access
-        # Denied" page carrying a reference id and nothing to solve. So a
+        # refuses: Imperva answers with an HTTP 403 or a "Pardon Our
+        # Interruption" page, and nothing on either to solve. So a
         # 2Captcha key does nothing about the state a blocked run is most
         # likely to meet, and saying what DOES clear it is more use than a
         # captcha hint that would cost money.
         #
-        # The dump is written even when it is empty, because "0 bytes" is
-        # itself the diagnosis on this site and a reader who finds no file at
-        # all cannot tell that from a run that never got here.
+        # The dump is written even when it is empty, because a reader who
+        # finds no file at all cannot tell an empty response from a run that
+        # never got here.
         debug_html = f"{args.out}_page{page_num}_debug.html"
         with open(debug_html, "w", encoding="utf-8") as f:
             f.write(html or "")
@@ -1211,14 +1206,8 @@ def scrape(args) -> int:
     dedupe_key = "sku"
     # Why the loop ended. "completed" means every requested page was fetched;
     # "no_new_products" means the listing itself ran out (also a complete
-    # result). "single_page_mode" is complete by construction — a detail page
-    # has no page 2. Anything else is an early stop, and the run is only a
-    # partial view.
-    # Only --mode product is single-page. A SHOP FRONT paginates exactly like
-    # a category listing — ?page=N, the same tiles — and treating it as
-    # single-page made `--mode shop --pages 2` fetch one page and report
-    # "complete", which is the silent-success failure this family exists to
-    # avoid. Found on the first live shop run.
+    # result). Anything else is an early stop, and the run is only a partial
+    # view. This repo has only --mode listing, which is never single-page.
     stop_reason = "completed"
 
     pool = proxy_pool_from_args(args)
@@ -1241,9 +1230,8 @@ def scrape(args) -> int:
             logger.warning("--concurrency %d with no proxy pool: every worker "
                            "leaves from the SAME address, which is a faster way "
                            "to get that address scored than to gather data. "
-                           "dubizzle already refuses a headless browser whatever the address it has "
-                           "scored by answering NOTHING at all, so an address "
-                           "that works is one worth not burning. Pass "
+                           "dubizzle refuses any exit outside the UAE, so "
+                           "an address that works is one worth not burning. Pass "
                            "--proxy-file to spread the load.", concurrency)
         if pool and pool.rotates_per_page():
             logger.info("--proxy-rotate per-page is redundant under "
@@ -1441,11 +1429,9 @@ def scrape(args) -> int:
 
     # One-per-run context, in the sidecar rather than repeated down a column.
     #
-    # In --mode product that is the seller's own id and name, off the page's
-    # Apollo cache. In --mode listing it is the scroll trace and the page's
-    # own result header: both say how much of the listing this run actually
-    # saw, which is the question a consumer of an infinitely-scrolling site
-    # most needs answered and which no column can carry.
+    # It is the scroll trace and the page's own result header, where the
+    # engine recorded them: both say how much of the listing this run
+    # actually saw, which no column can carry.
     extra = None
     scrolls = {o.page_num: o.scroll for o in outcomes if o.scroll}
     headers = {o.page_num: o.header for o in outcomes if o.header}
@@ -1501,12 +1487,9 @@ def parse_args():
                         "to override it with a label of your own.")
     p.add_argument("--pages", type=int, default=1,
                    help="Number of listing pages to crawl. Applies to "
-                        "--mode listing, which is the only mode. "
-                        "has one page. Note that only a CATEGORY URL has "
-                        "per-page addresses: a search is one infinitely "
-                        "scrolling page, so --pages above 1 there is honoured "
-                        "by scrolling further rather than by fetching more "
-                        "URLs.")
+                        "--mode listing, which is the only mode. Every "
+                        "listing page has its own ?page=N address, and the "
+                        "site's own totalPages caps how many there are.")
     p.add_argument("--delay", type=float, default=2.0, help="Delay between pages, seconds")
     p.add_argument("--concurrency", type=int, default=1, metavar="N",
                    help="Fetch pages through N parallel workers (default 1 — "
@@ -1618,12 +1601,6 @@ def parse_args():
                    help="Save the exact HTML the parser is given, on success as "
                         "well as failure. Useful when the row count is right but "
                         "a column comes back empty — see TROUBLESHOOTING.md.")
-    # HEADFUL by default, a departure from every sibling repo and a measured
-    # one: Akamai refuses a headless browser here whatever the exit -- HTTP
-    # 403 and a 394-byte "Access Denied" from four residential exits and one
-    # datacentre address, against 200 and the full catalogue from those very
-    # same addresses with a real window. A --headless default would be a
-    # scraper whose default cannot fetch the site.
     # HEADLESS is the default, as in the rest of the family, and the
     # measurement behind that is about the EXIT rather than the window: every
     # live run of this repo was headless and was served the full catalogue —

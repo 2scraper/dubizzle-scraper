@@ -8,6 +8,48 @@ as a CLI toolkit can. A **patch** release means fixes — it does not mean every
 flag and every default is frozen. Where a patch changes behaviour an existing
 user would notice, the release notes say so first.
 
+## [Unreleased]
+
+### Fixed
+
+- **Prose and strings inherited from the sites this repo was copied from.**
+  Several comments, docstrings and user-visible strings still described
+  another site's behaviour as if it were dubizzle's. Rewritten to what this
+  repo's own README measures, or deleted where it has no equivalent:
+  - `--help` text: `scraper_api_client.py` called itself an "auction
+    scraper" and described a scrolling grid and a `/p/<cat>/…` URL shape;
+    `diff_runs.py --price-tolerance-pct` said the site quotes IDR; the
+    Playwright engine's `--pages` help described an infinitely scrolling
+    search page.
+  - The Playwright engine's `--concurrency` warning said dubizzle refuses a
+    headless browser by answering nothing at all. It refuses exits outside
+    the UAE.
+  - The engines, `captcha_solver.py` and `output_writer.py` described an
+    Akamai refusal of HEADLESS browsers (a 394-byte "Access Denied"), a
+    `--mode product` / `--mode shop`, a search that cannot be paginated and
+    a `/p/<slug>` discovery hub. None of those exist here: the refusal is
+    Imperva's, triggered by the exit's country, and the only mode is
+    `listing`. A contradictory "HEADFUL by default" comment is removed from
+    all three engines and the suite (the default is, and was, headless).
+  - `diff_runs.py` said the site quotes euro on 18 locales and described
+    auctions and bids. It quotes AED in two languages; what moves without a
+    price change is the Car of the Week slot.
+  - An unused `shop_facts` field is removed from all three engines.
+- `CONTRIBUTING.md`'s "Reporting a site change" described another site's
+  selectors and page kinds; rewritten for the SSR payload, the JSON-LD join
+  and the DOM fallback this repo actually reads. Its note that a datacentre
+  run gets no response at all is corrected to the measured Imperva refusal.
+- The site-change issue template carried another site's options (reserve
+  prices, favourite counts, suggested lots, a 100-page cap) and said a
+  headless run is refused. The bug-report template's example used another
+  repo's output prefix and product count.
+- `.gitignore` / `.dockerignore` ignored `dubizzle_listings.*`, which no
+  engine writes; the default `--out` prefix is `dubizzle_products`.
+- The suite's env-placeholder and proxy-line checks used another repo's
+  variable names; they now use `DUBIZZLE_CDP_ENDPOINT` and `DUBIZZLE_PROXY`.
+- README: the last badge read "runs without an account", which is not true
+  here — a plain run needs a UAE exit. It now says so.
+
 ## [0.1.1] — 2026-09-16
 
 ### Fixed
