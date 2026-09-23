@@ -902,8 +902,8 @@ def test_output_contract():
                 "single_page_mode" in COMPLETE_STOP_REASONS)
 
     # No defaulted currency anywhere: a row that could not establish one says
-    # None rather than claiming EUR, which would be wrong for the four
-    # non-euro country sites.
+    # None rather than claiming AED, even though AED is the only currency
+    # this site has been measured to quote: a default is a guess, not a fact.
     ok &= check("Product defaults currency to None, not a guess",
                 Product().currency is None)
     ok &= check("Product defaults price_source to None",
@@ -1055,7 +1055,7 @@ def test_diff():
     ok &= check("a new product is reported as added",
                 [r["sku"] for r in d["added"]] == ["4"])
     # A price difference that comes with a price_source difference says
-    # something about OUR two snapshots, not about the shop.
+    # something about OUR two snapshots, not about the site.
     ok &= check("a price move with a source change is not 'changed'",
                 not any(c["sku"] == "3" for c in d["changed"]))
     ok &= check("...it is reported separately as source_changed",
@@ -2106,7 +2106,7 @@ def _placeholder_reads_unset(raw):
     are not already set, so writing a temporary .env would be shadowed by
     whatever the suite has already loaded.
     """
-    name = "CATAWIKI_CDP_ENDPOINT"
+    name = "DUBIZZLE_CDP_ENDPOINT"
     saved = os.environ.get(name)
     try:
         os.environ[name] = raw
@@ -2323,7 +2323,7 @@ def test_proxy_pool():
               "SOMELOGIN-zone-custom-region-de:SOMEPASSWORD")
     raised = None
     try:
-        parse_proxy_line(pasted, source="CATAWIKI_PROXY")
+        parse_proxy_line(pasted, source="DUBIZZLE_PROXY")
     except ProxyError as exc:
         raised = str(exc)
     ok &= check("a proxy-list line pasted as a URL is refused, not crashed on",
@@ -2489,11 +2489,6 @@ def test_engines(skips):
                     'choices=["listing"]' in src)
         ok &= check("%s has no unmeasured detail mode" % name,
                     '"product"]' not in src and '"lot"]' not in src)
-        # HEADFUL is the default here, against headless in every sibling: a
-        # headless browser is refused with HTTP 403 from every address tried,
-        # residential included, while a real window is served from the same
-        # ones. A --headless default would be a scraper whose default cannot
-        # fetch the site.
         # HEADLESS is the default, as in the rest of the family: every live
         # run of this repo was headless and was served. What was refused was
         # a non-UAE address, headful and headless alike — the discriminator

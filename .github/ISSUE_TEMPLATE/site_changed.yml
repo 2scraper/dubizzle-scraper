@@ -21,27 +21,24 @@ body:
           instead `brand`, `seller_name` or `in_stock` are empty while
           everything else is fine, it is the page's JSON-LD ItemList or the
           path-keyed join to it, not the payload.
-          not carry it: bids arrive at hydration.
 
-        So "no rows at all" and "rows with no prices" are two different
+        So "no rows at all" and "no brand / seller_name" are two different
         breakages with two different fixes, and `price_source` on the rows
-        tells you which happened: `next_data+dom` is healthy, `next_data`
-        means nothing hydrated.
+        tells you which source each row's price came from: `next_data+jsonld`
+        where the page publishes both, `next_data` on the verticals with no
+        ItemList, `dom` on the fallback path.
 
   - type: dropdown
     id: what_broke
     attributes:
       label: What stopped matching
       options:
-        - No rows at all on a page that visibly has lots (the payload moved)
-        - Rows come out with no prices (the card, or its price class, moved)
+        - No rows at all on a page that visibly has ads (the payload moved)
+        - Rows come out with no prices on motors, property or classified
         - brand / seller_name / in_stock empty (the JSON-LD join moved)
-        - A null price with no reserve_price_set flag (the invariant broke)
-        - favorite_count empty on every row (the card's counter moved)
-        - Pagination stops early, repeats a page, or runs past the 100 cap
+        - Pagination stops early, repeats a page, or runs past the site's totalPages
         - One vertical returns nothing while the others are fine
         - The Arabic pages lost brand / seller_name / in_stock
-        - A no-results search returns 24 suggested lots as if they were real
         - Something else
     validations:
       required: true
@@ -52,8 +49,8 @@ body:
       label: URL
       description: >-
         The exact URL, its locale prefix, and how the browser was reached.
-        Please say whether the run was headful or over --cdp-endpoint: a
-        headless run is refused by the site and is not a parser problem.
+        Please say which country the exit was in: an exit outside the UAE is
+        refused by the site and is not a parser problem.
       placeholder: "https://uae.dubizzle.com/motors/used-cars/ (English, headless Chromium over --cdp-endpoint, exit: UAE residential)"
     validations:
       required: true
@@ -74,8 +71,8 @@ body:
           here (`AED` in one, the digits in
           `[data-testid="listing-price"]`), so both are needed.
         - For a missing-column problem: which vertical, and whether the
-          page has a JSON-LD ItemList at all
-          ("Current bid", "Aktuelles Gebot", ...) and the locale.
+          page has a JSON-LD ItemList at all, and the locale (`/ar/` or
+          none).
       render: text
     validations:
       required: true

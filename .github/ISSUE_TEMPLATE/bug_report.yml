@@ -92,7 +92,7 @@ body:
       placeholder: |
         python3 playwright_scraper.py \
           --url "https://uae.dubizzle.com/motors/used-cars/" \
-          --pages 3 --out grills
+          --pages 3 --out cars
     validations:
       required: true
 
@@ -112,7 +112,7 @@ body:
     attributes:
       label: What you expected instead
       placeholder: >-
-        96 products, as the README says a category page yields.
+        25 ads a page, as the README says a motors listing yields.
     validations:
       required: true
 

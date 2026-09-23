@@ -283,13 +283,13 @@ def _run_once(args, attempt: int = 1, attempts: int = 1) -> int:
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="dubizzle auction scraper — 2captcha Scraper API edition (no "
-                    "local browser). NOTE: these pages DO need JavaScript, "
-                    "and their grid hydrates only as the page is scrolled, "
-                    "so a single fetch returns about 5 products where a "
-                    "browser engine returns 60. Pass --cdp-url to reach the "
-                    "site at all; see this file's docstring for the measured "
-                    "numbers, and prefer playwright_scraper.py.")
+        description="dubizzle classifieds scraper — 2captcha Scraper API "
+                    "edition (no local browser). NOTE: measured 2026-09-14, "
+                    "the API's own fetcher is outside the UAE and was served "
+                    "Imperva's \"Pardon Our Interruption\" page, with and "
+                    "without --cdp-url; see this file's docstring for the "
+                    "measured numbers, and prefer playwright_scraper.py with "
+                    "a UAE exit.")
     # NOT required: prefer the TWOCAPTCHA_KEY env var. A key passed on the
     # command line is visible to anyone who can run `ps`, and it lands in
     # shell history and in any log that echoes the command line.
@@ -297,10 +297,8 @@ def parse_args():
                    help="2captcha.com API key (sent as a Bearer token). "
                         "Defaults to $TWOCAPTCHA_KEY, which is the safer way to pass it.")
     p.add_argument("--url", default=None,
-                   help="A dubizzle listing URL — a category listing "
-                        "(/p/<cat>/<sub>/<subsub>) is the only kind this path "
-                        "can read at all, since a search grid has no "
-                        "server-rendered container. Required, unless "
+                   help="A dubizzle category listing URL on uae.dubizzle.com, "
+                        "e.g. /motors/used-cars/. Required, unless "
                         "DUBIZZLE_URL is set in the environment or in .env.")
     p.add_argument("--category", default=None, help="Label to tag output rows with. Defaults to the category segment of the URL, so the column is never empty just because the flag was omitted.")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
