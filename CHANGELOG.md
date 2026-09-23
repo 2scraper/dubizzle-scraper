@@ -50,6 +50,11 @@ user would notice, the release notes say so first.
 - README: the last badge read "runs without an account", which is not true
   here — a plain run needs a UAE exit. It now says so.
 
+- `SECURITY.md` said this project has no releases or version tags; it has
+  both. "Supported versions" now names the latest release and `main`.
+- `captcha_solver.py`'s docstring pointed at a "No DataDome solver" section
+  that does not exist in this repo (it came with the copied core). Removed.
+
 ## [0.1.1] — 2026-09-16
 
 ### Fixed
