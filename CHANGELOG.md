@@ -8,6 +8,21 @@ as a CLI toolkit can. A **patch** release means fixes — it does not mean every
 flag and every default is frozen. Where a patch changes behaviour an existing
 user would notice, the release notes say so first.
 
+## [Unreleased]
+
+### Fixed
+
+- **The Scraper API path (`scraper_api_client.py`) failed whenever a wait flag
+  was given, and never saw the target's status.** Measured 2026-09-23 against
+  the live `/tasks/sync` endpoint: `waitFor` sent as a JSON-encoded string
+  (what this client sent) is answered HTTP 422 "params.waitFor must be an
+  object" and is still billed ($0.0005); sent as an object it is answered
+  HTTP 200. It is now an object. And the response's `status` is the API's own
+  verdict ("success"), while the target site's HTTP code is `http_code` — the
+  client handed `status` onward, so a target 403/503 never reached the page
+  classifier. It now reads `http_code`, falling back to `status` only if that
+  is an integer. After the fix, one live call (`--wait-text AED` on the canary's used-cars listing, no `--cdp-url`) answered HTTP 200 (no 422) with an integer upstream status, 200; the body was a 1,156-byte Incapsula interstitial, correctly reported as blocked (exit 3), as the module docstring already says for the API's own exit.
+
 ## [0.1.1] — 2026-09-16
 
 ### Fixed
