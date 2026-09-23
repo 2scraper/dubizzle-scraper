@@ -2969,6 +2969,49 @@ def test_parse_is_gated_on_the_policy():
     return ok
 
 
+def test_scraper_api_sends_waitfor_as_an_object_and_reads_http_code():
+    """Measured 2026-09-23 against the live Scraper API: a JSON-encoded
+    STRING waitFor is answered HTTP 422 and still billed, an object is
+    answered 200; and the target's status is `http_code`, while `status` is
+    the API's own verdict ("success"). Driven through the real fetch_html
+    with requests.post stubbed -- no network."""
+    group("Scraper API payload and target status")
+    import types
+    import scraper_api_client as sac
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+        headers = {}
+        text = ""
+
+        def json(self):
+            return {"status": "success", "http_code": 403, "headers": {},
+                    "body": "<html></html>"}
+
+    def _post(url, **kw):
+        sent.update(kw.get("json") or {})
+        return _Resp()
+
+    args = types.SimpleNamespace(
+        url='https://uae.dubizzle.com/motors/used-cars/', key="k" * 8,
+        timeout=60, cdp_url=None, wait_text='AED', wait_element=None,
+        wait_state=None)
+    real_post = sac.requests.post
+    sac.requests.post = _post
+    try:
+        _html, status = sac.fetch_html(args)
+    finally:
+        sac.requests.post = real_post
+    ok = check("Scraper API: --wait-text sends waitFor as an OBJECT, not a JSON "
+               "string (422 + billed, 2026-09-23) -- got %r" % (sent.get("waitFor"),),
+               sent.get("waitFor") == {"text": 'AED'})
+    ok &= check("Scraper API: the target status handed onward is http_code (403), "
+                "not the API's 'success' -- got %r" % (status,),
+                status == 403 and isinstance(status, int))
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -3010,6 +3053,7 @@ def main() -> int:
     ok &= test_public_names_have_consumers()
     ok &= test_log_format_strings_match_their_args()
     ok &= test_x_debug_header_is_redacted()
+    ok &= test_scraper_api_sends_waitfor_as_an_object_and_reads_http_code()
 
     print()
     if _failures:
