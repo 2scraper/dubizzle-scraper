@@ -11,7 +11,8 @@ __pycache__/
 .venv/
 venv/
 env/
-dubizzle_listings.*
+dubizzle_products.*
+dubizzle_products_*.*
 *_debug.html
 *_debug.png
 live_results/

@@ -6,7 +6,7 @@
 [![python](https://img.shields.io/badge/python-3.9%20%7C%203.13-blue)](pyproject.toml)
 [![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 [![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20pyppeteer%20%7C%20CDP-informational)](#engines)
-[![runs without an account](https://img.shields.io/badge/runs%20without-an%20account-brightgreen)](#do-you-need-any-of-the-paid-products)
+[![needs a UAE exit](https://img.shields.io/badge/needs-a%20UAE%20exit-orange)](#do-you-need-any-of-the-paid-products)
 
 Scrapes [dubizzle](https://uae.dubizzle.com) UAE classifieds — cars, property,
 electronics, jobs and community services — to JSON or CSV, with four
