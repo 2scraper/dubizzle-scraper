@@ -3,24 +3,14 @@ output_writer.py
 -----------------
 Shared row models + JSON/CSV writers used by all three scrapers.
 
-Two modes, one row shape
-------------------------
-    --mode listing   a search grid or a category listing -> Product
-    --mode product   one /{shop}/{slug} detail page -> Product, with the
-                     trailing detail-only fields populated
+One mode, one row shape
+-----------------------
+    --mode listing   a category listing -> Product
 
-The listing and lot modes yield the SAME class, because here a lot page is not a
-different kind of object from a tile — it is the same product described more
-fully. So there is no second dataclass here (a sibling repo needs one for
-reviews; this one does not), and `diff_runs.py` can compare a listing run
-against a product run on the columns both populate.
-
-There is deliberately no `--mode seller`. A seller's own page is its own
-application shell with its own markup, none of which has been captured or
-measured, and a mode that ships untested would be worse than a mode that is
-absent. `product_parser.shop_metadata` reads the seller's facts off a detail
-page for the sidecar, which is what a run covering one product can honestly
-say about its seller.
+There is deliberately no detail mode. An individual ad's page has not been
+captured or measured, and a mode that ships untested would be worse than a
+mode that is absent. So there is one dataclass here (a sibling repo needs a
+second one for reviews; this one does not).
 
 `Product` keeps the family's first sixteen columns in the family's order,
 with this site's own ones appended after `position`, so a consumer
@@ -359,19 +349,17 @@ EXIT_NO_PRODUCTS = 4
 # search genuinely matched nothing" from "something stood between us and the
 # content". See product_parser.detect_bot_challenge.
 #
-# On this site this code specifically does NOT cover the three ways to get a
-# real page with no products on it: a `/p/<slug>` discovery hub, which
-# answers 200 with banners and carousels and no grid; a search whose query
-# matches nothing ("Oops, produk nggak ditemukan"); and one page past the
-# end of a category listing. All three are EXIT_NO_PRODUCTS — the request
-# was served exactly as asked and simply has no products on it. Reporting
-# any of them as blocked would send a user hunting for a proxy problem that
-# does not exist.
+# On this site this code specifically does NOT cover the two ways to get a
+# real page with no ads on it: a hub page (`/`, `/motors/`), which is
+# category tiles and promo rails with no result grid; and one page past the
+# end of a listing, which answers HTTP 200 with `totalHits: 0`. Both are
+# EXIT_NO_PRODUCTS — the request was served exactly as asked and simply has
+# no ads on it. Reporting either as blocked would send a user hunting for a
+# proxy problem that does not exist.
 #
-# What EXIT_BLOCKED means here is unusually literal: this site refuses a
-# address it has scored NOTHING at all. No status code, no interstitial, no
-# vendor marker — the HTTP/2 stream is reset and the run sees a connection
-# error rather than a page.
+# What EXIT_BLOCKED means here: Imperva refused the exit — an HTTP 403, or
+# the "Pardon Our Interruption" page, which arrives as HTTP 200. Both are
+# recognised by carrying none of the site's own asset hosts (see the README).
 EXIT_BLOCKED = 3
 
 # Exit code for a run that gathered SOME rows and then stopped early — a
@@ -451,22 +439,15 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
       partial  — rows were gathered, then the run stopped early
       failed   — nothing was gathered at all
 
-    `mode` and `source` are recorded because `mode` is not implied by the
-    repo: the same output prefix can hold a listing run or a product run,
-    and those populate different columns — `sold` is a FLOOR on a listing
-    row and exact on a product row, so diffing one against the other would
-    report every row as changed. diff_runs.py refuses a pair whose modes or
-    sources differ. `source` is `dubizzle.com` on every row of every run
+    `mode` and `source` are recorded because the family's sidecar carries
+    them: in a sibling repo with several modes the output prefix alone does
+    not say which one produced a file, and diff_runs.py refuses a pair whose
+    modes or sources differ. Here `mode` is always "listing". `source` is `dubizzle.com` on every row of every run
     here, since the site has one storefront and one currency; it is kept
     because consumers read these columns by name across the family.
 
-    `extra` carries facts about the run that are not about any single row.
-    `--mode shop` uses it for the SELLER's own name, location, rating and
-    review count: a run covers exactly one shop, so those belong to the run
-    rather than repeated down a column, and the shop's review count (16679
-    on the captured seller) is a different number from its listings' own
-    (827 on one of them) — putting them in one column would make the schema
-    lie.
+    `extra` carries facts about the run that are not about any single row,
+    so they are not repeated down a column.
 
     `pages_failed` lists the pages that did not yield data, by number.
     `pages_completed` alone was enough only while pages were fetched strictly
@@ -537,15 +518,12 @@ def save(rows: Sequence[Any], out_prefix: str, fmt: str,
 # the DATA (a page contributed nothing not already seen, so the listing is
 # over), while the second is a property of a CSS SELECTOR and is therefore
 # the weaker signal — a renamed attribute looks identical to a short
-# catalogue. On this site that ordering is not a preference, it is the only
-# thing that works: the site publishes NO `link[rel=next]` and no numbered
-# anchors anywhere, a CATEGORY listing is addressable by `?page=N`, and a
-# SEARCH is not addressable at all — `?page=2` there returns an empty result
-# set rather than page 2. So "no new products" is the one termination
-# condition available on a search. See page_flow.pagination_is_addressable.
+# catalogue. On this site the listing states its own end: `?page=N` past
+# `totalPages` answers with `totalHits: 0` (see page_flow's pagination notes).
 #
-# "single_page_mode" is complete by construction: --mode product reads one
-# page because one page is all there is.
+# "single_page_mode" is the family's name for a mode that reads one page by
+# construction. This repo has no such mode; the reason is kept in the set so
+# the family's status mapping stays identical.
 COMPLETE_STOP_REASONS = ("completed", "pagination_exhausted", "no_new_products",
                          "single_page_mode")
 

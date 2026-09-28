@@ -42,38 +42,25 @@ not the check caught it.
 
 dubizzle changing its markup is the normal way this stops working, and it
 has its own issue template. The detail that saves the most time is WHICH
-anchor broke, because on this site there is no structured data on a listing
-page to fall back on — measured zero `application/ld+json`, zero
-`__NEXT_DATA__` and zero Apollo state across six captures — so the DOM is
-not the primary path by preference, it is the only one.
+source broke, because a row here is read from more than one:
 
-1. **The grid container.** `[data-testid="divSRPContentProducts"]` on a
-   search page, `[data-ssr="productsCategoryL2/L3SSR"]` on a category
-   listing. If one of these moves the run reports 0 rows and exit 4, which
-   is loud.
-2. **The tile marker.** `[data-testid="imgLeg-c"]` on a search page (one per
-   tile), `[data-testid="divProductWrapper"]` inside
-   `a[data-testid="lnkProductContainer"]` on a category listing.
-3. **The reading ORDER inside the tile** — badge, title, price, was-price,
-   rating, sold, shop, location. The field reads rest on it, deliberately,
-   because the classes around each field are build hashes:
-   `<span class="+tnoqZhn89+NHUA43BpiJg==">` is the title today. If dubizzle
-   reorders a tile, `title` and the prices are what break.
-4. **`span.flip`**, the shop name and the shop's city in that order, exactly
-   two per search tile.
-
-The one place structured data does exist is a DETAIL page's
-`window.__cache` Apollo blob, which is where `--mode product` reads the real
-product id, the exact sold count and the review count.
+1. **The SSR payload** — `<script id="__NEXT_DATA__">`, the Redux action
+   `listings/fetchListingDataForQuery/fulfilled`. Every ad on every vertical,
+   with its ids, url, price, location, attributes and the pagination
+   contract. If this moves the run reports 0 rows and exit 4, which is loud.
+2. **The JSON-LD ItemList**, on motors and property only — the one source
+   for `brand`, `seller_name` and `in_stock`, joined to the payload on the
+   ad's locale-stripped path.
+3. **The DOM fallback**, anchored on the ad-URL pattern (every ad path
+   carries `/{yyyy}/{m}/{d}/`), with the tile's price read from the wrapper
+   around `[data-testid="listing-price"]`. Every class on a tile but
+   `lpv-cards` is a build hash, so nothing is anchored on one.
 
 A third thing can break without any path failing: the **join** between the
-tiles and the structured data. When it breaks, the row count and the prices
-stay healthy while `in_stock` and part of `brand` quietly empty out — so
-every run logs its structured-price confirmation share per page and warns
-below a floor set PER PAGE KIND (search 8%, category 70%, shop 80%; the
-achievable share differs by a factor of eight between them). If you are
-reporting a change, that percentage and the page kind are the numbers to
-include.
+payload and the JSON-LD. When it breaks, the row count and the prices stay
+healthy while `brand`, `seller_name` and `in_stock` quietly empty out. If
+you are reporting a change, say which vertical and which language (`/ar/`
+or none) — the Arabic join is the one that broke before.
 
 `--dump-html PATH` writes the exact bytes the parser was given, on success as
 well as failure, and a run that finds nothing writes a dump and a screenshot
@@ -223,25 +210,24 @@ Most do not — the suite covers the parser, the writers, the captcha classifier
 and the CLI contract against inline fixtures. If yours genuinely needs
 dubizzle.com, say in the PR what you ran, which URL and page kind, from
 which exit, and what you got — including the price and image coverage
-percentages the run prints, and the scroll trace from the sidecar. Note that
-a run from a datacentre address gets NO RESPONSE AT ALL, so "it returned
-nothing" from a VPS is not a finding. Product counts differ by category, by
-URL and by how far the scroll got, so a bare "worked for me" is not
-reproducible.
+percentages the run prints. Note that a run from an exit outside the UAE
+is refused by Imperva — a 403, or a "Pardon Our Interruption" page under
+HTTP 200 — so "it returned nothing" from a non-UAE address is not a
+finding. Ad counts differ by vertical and by URL, so a bare "worked for me"
+is not reproducible.
 
 **Run more than the primary engine.** "Mirror them exactly" is a design rule,
-not a verification: the first live run of the pyppeteer engine crashed on its
-FIRST fetch on a signature mismatch that four separate offline checks and 400
-green assertions had not caught.
+not a verification: in a sibling repo (tokopedia-scraper) the first live run
+of the pyppeteer engine crashed on its FIRST fetch on a signature mismatch
+that four separate offline checks and 400 green assertions had not caught.
 
-Do not add anything that submits the registration form. This project
-deliberately never does, and a captcha token proved valid by creating a real
-account is not a result worth having.
+Do not add anything that submits a form on the site. This project
+deliberately never does.
 
 ## Scope
 
-This repo scrapes **public pages** on dubizzle: category listings, search
-listings and product pages, exactly as an anonymous visitor is served them.
+This repo scrapes **public pages** on dubizzle: category listings on
+`uae.dubizzle.com`, exactly as an anonymous visitor is served them.
 Out of scope: anything behind a login, anything that submits a form, and
 anything that defeats a protection rather than passing it the way an ordinary
 browser does.
