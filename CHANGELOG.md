@@ -73,6 +73,17 @@ user would notice, the release notes say so first.
   `page_flow.attempts` in every entry point; a check reads the source of each
   one and calls the validator, so a new engine declaring the flag with a
   plain int fails the suite.
+- **Output files are written atomically.** `write_json`, `write_csv` and the
+  `.meta.json` sidecar opened their target with mode `w`, which truncates
+  before a byte is written, so a crash, a kill or a full disk halfway through
+  left a shorter file where a complete one had been, and a truncated sidecar
+  beside good rows. They now write a temp file in the target's own directory,
+  `fsync`, and `os.replace` it; an existing file keeps its mode and a new one
+  gets what `open()` would have given it. The offline suite checks a failed
+  write leaves the previous file byte-identical and no temp file behind.
+- **CI now tests the upper end of the Python range the README claims.** The
+  offline matrix ran 3.9 and 3.12 while the README said "both ends are tested"
+  for 3.9 through 3.13; it now runs 3.9 and 3.13.
 
 - **The Scraper API path (`scraper_api_client.py`) failed whenever a wait flag
   was given, and never saw the target's status.** Measured 2026-09-23 against

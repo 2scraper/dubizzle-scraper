@@ -3472,6 +3472,46 @@ def test_engine_fetch_paths(skips):
     return ok
 
 
+def test_writes_are_atomic():
+    """A failed write must leave the previous good file whole, and a
+    successful one must not leave a 0600 file or a stray temp file."""
+    import tempfile
+    import output_writer as ow
+    ok = True
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "out.json")
+        ow.write_json([Product(sku="a", url="u", title="t")], path)
+        good = open(path, encoding="utf-8").read()
+        os.chmod(path, 0o640)
+
+        class Boom:  # asdict() raises halfway through building the payload
+            pass
+        try:
+            ow.write_json([Boom()], path)
+            raised = False
+        except Exception:
+            raised = True
+        ok &= check("a write that fails raises", raised)
+        ok &= check("a failed write leaves the previous file byte-identical",
+                    open(path, encoding="utf-8").read() == good)
+        ok &= check("a failed write leaves no temp file behind",
+                    os.listdir(d) == ["out.json"])
+
+        ow.write_json([Product(sku="b", url="u", title="t")], path)
+        ok &= check("an overwrite keeps the existing file's mode",
+                    os.stat(path).st_mode & 0o777 == 0o640)
+        fresh = os.path.join(d, "new.csv")
+        ow.write_csv([], fresh)
+        umask = os.umask(0)
+        os.umask(umask)
+        ok &= check("a new file gets the mode open() would have given it",
+                    os.stat(fresh).st_mode & 0o777 == 0o666 & ~umask)
+        src = inspect.getsource(ow)
+        ok &= check("no writer opens its target for writing in place",
+                    'open(path, "w"' not in src)
+    return ok
+
+
 def main() -> int:
     ok = True
     # Checks that could not run because an optional engine library is absent.
@@ -3493,6 +3533,7 @@ def main() -> int:
     ok &= test_page_flow()
     ok &= test_output_contract()
     ok &= test_writers()
+    ok &= test_writes_are_atomic()
     ok &= test_finish_run()
     ok &= test_diff()
     ok &= test_captcha()

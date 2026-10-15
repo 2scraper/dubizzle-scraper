@@ -20,8 +20,11 @@ Everything below is row-class-agnostic: pass `row_cls` so an empty CSV still
 gets the right header for the mode that produced it.
 """
 
+import contextlib
 import csv
 import json
+import os
+import tempfile
 from dataclasses import dataclass, asdict, field, fields
 from datetime import datetime, timezone
 from typing import Optional, List, Set, Sequence, Any, Type
@@ -348,8 +351,48 @@ def _csv_escape(v: Any) -> Any:
     return v, False
 
 
+@contextlib.contextmanager
+def _atomic(path: str, newline: Optional[str] = None):
+    """Write to a temporary file beside `path`, then rename over it.
+
+    A kill, a full disk or a crash halfway through `json.dump` would leave a
+    TRUNCATED file where last night's good one was (`save` refuses to
+    overwrite good data with an empty result for the same reason), and the
+    sidecar beside it would still describe the old run. `os.replace` is
+    atomic on POSIX and Windows, but only within one filesystem, hence the
+    temp file in the target's OWN directory; `fsync` first, so the rename
+    cannot reach the disk before the bytes do.
+
+    The temp file is created 0600, so the mode is set explicitly: an existing
+    file keeps its own, a new one gets what `open()` would have given it.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline=newline, dir=directory,
+        prefix=os.path.basename(path) + ".", suffix=".tmp", delete=False)
+    try:
+        with handle:
+            yield handle
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            mode = os.stat(path).st_mode & 0o7777
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        os.chmod(handle.name, mode)
+        os.replace(handle.name, path)
+    except BaseException:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+        raise
+
+
 def write_json(rows: Sequence[Any], path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
+    with _atomic(path) as f:
         json.dump([asdict(r) for r in rows], f, ensure_ascii=False, indent=2)
 
 
@@ -365,7 +408,7 @@ def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Product) -> int:
     # Returns how many cells were formula-escaped (see _csv_escape).
     fieldnames = [f.name for f in fields(row_cls)]
     escaped = 0
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    with _atomic(path, newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in rows:
@@ -461,7 +504,7 @@ def write_run_meta(out_prefix: str, meta: dict) -> str:
     both complete, and between runs of different `mode`.
     """
     path = f"{out_prefix}.meta.json"
-    with open(path, "w", encoding="utf-8") as f:
+    with _atomic(path) as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
     print(f"[+] Wrote run metadata -> {path} (status={meta.get('status')})")
     return path
