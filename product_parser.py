@@ -16,7 +16,7 @@ brand and are NOT this site: they run the OLX platform (no `__NEXT_DATA__`
 anywhere, a different DOM, `<title>` reading "دوبيزل (أوليكس)" — dubizzle
 (OLX)), and `dubizzle.com.lb` redirects to `olx.com.lb` outright. Measured
 2026-09-14. `unsupported_reason` names that reason rather than saying "not a
-dubizzle site", which is false and sends the reader looking for a typo (§5).
+dubizzle site", which is false and sends the reader looking for a typo.
 
 Where the data is, and why it is not where you would expect
 -----------------------------------------------------------
@@ -31,7 +31,7 @@ others. Measured across 12 captures and 195 listings, 2026-09-14:
     jobs                      25           0                     0
     community                 25           0                     0
 
-So JSON-LD is NOT the primary path here, against this family's default (§4).
+So JSON-LD is NOT the primary path here, against this family's default.
 It is absent on three of the six verticals, and a JSON-LD-primary parser
 would have produced a scraper that works on cars and flats and silently
 returns nothing on everything else. The payload —
@@ -66,7 +66,7 @@ The currency. A tile's price is split across two sibling nodes —
     </div>
 
 — so reading the price node alone gets "389,000" with no currency, and
-reading the wrapper's text gets "AED 389,000". §4's split-price trap, in the
+reading the wrapper's text gets "AED 389,000". The split-price trap, in the
 shape where it is the SYMBOL rather than the cents that lives elsewhere.
 
 The trap on this site
@@ -117,7 +117,7 @@ EMIRATE_HOSTS = ("dubai.dubizzle.com", "abudhabi.dubizzle.com",
 
 HOSTS = BROWSE_HOSTS + EMIRATE_HOSTS
 
-# Same brand, different platform. Refused WITH the reason (§5).
+# Same brand, different platform. Refused WITH the reason.
 OLX_PLATFORM_HOSTS = ("dubizzle.com.bh", "www.dubizzle.com.bh",
                       "dubizzle.com.om", "www.dubizzle.com.om",
                       "dubizzle.com.eg", "www.dubizzle.com.eg",
@@ -131,7 +131,7 @@ LOCALES = ("en", "ar")
 # AED, and a fact rather than a default: the motors and property JSON-LD
 # state `offers.priceCurrency: "AED"` outright, and every tile on every
 # vertical prints the ISO code in its own node. Still never written onto a
-# row that has no price (§4).
+# row that has no price.
 CURRENCY = "AED"
 
 # The site's own asset hosts. A page dubizzle SERVED is built out of them —
@@ -333,7 +333,7 @@ def paginates_by_url(url: str) -> bool:
     `https://uae.dubizzle.com/motors/used-cars/?page=2` — exactly what the
     convention below builds — and page 2's payload reports `pagination.page:
     1` for it. So every page's address is knowable up front and workers can
-    be handed independent pages (§7).
+    be handed independent pages.
     """
     return listing_kind(url) in PAGINATED_KINDS
 
@@ -486,7 +486,7 @@ def hits_per_page(html: Optional[str]) -> int:
 def total_pages(html: Optional[str], url: str = "") -> Optional[int]:
     """Pages this listing has, from the site's OWN count.
 
-    The strongest form §7 asks for, and stronger than the arithmetic a
+    The strongest pagination signal available, and stronger than the arithmetic a
     sibling repo needs: page 1's payload states `totalPages` directly, so no
     selector is followed and no page count is inferred. The site applies its
     own result cap before publishing this number, which is why it is 400 on a
@@ -641,7 +641,7 @@ def _epoch_iso(value: Any) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 # A rendered page uses a no-break variant so the number cannot wrap, so the
-# plain space is not enough (§4).
+# plain space is not enough.
 _GROUP_SPACES = " \u00a0\u202f\u2009"
 _AMOUNT = (r"\d{1,3}(?:[.,%s]\d{3})+(?:[.,]\d{1,2})?" % _GROUP_SPACES
            + r"|\d+(?:[.,]\d{1,2})?")
@@ -650,7 +650,7 @@ _AMOUNT = (r"\d{1,3}(?:[.,%s]\d{3})+(?:[.,]\d{1,2})?" % _GROUP_SPACES
 _PRICE_RE = re.compile(r"(?:AED|DHS|Dhs|د\.إ)\s*(" + _AMOUNT + r")"
                        r"|(" + _AMOUNT + r")\s*(?:AED|DHS|Dhs|د\.إ)")
 # Stripped BEFORE matching, not rejected after: a rejected match has already
-# consumed the currency symbol beside it (§4).
+# consumed the currency symbol beside it.
 _PCT_RE = re.compile(r"-?\s*\d{1,3}(?:[.,]\d+)?\s*%|-?\s*%\s*\d{1,3}(?:[.,]\d+)?")
 
 
@@ -731,7 +731,7 @@ BLOCK_MARKERS = (
 # as opposed to one refusing outright.
 #
 # `_Incapsula_Resource` on its OWN is deliberately NOT in this list, and that
-# is the §18 rule applied before it could cost anything: the marker appears
+# is the "count it on a good page first" rule applied before it could cost anything: the marker appears
 # once on pages dubizzle plainly served (1 occurrence on the motors page 1
 # capture and 1 on the property capture, against 3 and 4 on the two refusals).
 # A marker that matches a good page is worse than no marker, so the entries
@@ -756,7 +756,7 @@ BOT_CHALLENGE_MARKERS = (
 )
 
 # WHICH CAPTCHA THIS SITE ACTUALLY USES, found by reading its own bundles
-# rather than by guessing from a vendor list (§18).
+# rather than by guessing from a vendor list.
 #
 # Google reCAPTCHA. The key below is dubizzle's, and it is in the site's own
 # JavaScript twice — as `RECAPTCHA_KEY` in the argument object handed to
@@ -771,7 +771,7 @@ BOT_CHALLENGE_MARKERS = (
 # `recaptcha/api.js` loader or a single `grecaptcha.*` call. The widget is
 # rendered by a separate auth application that the listing pages never load,
 # so the loader's `render=` parameter, which is what settles v2 against v3
-# (§8), is not observable from anything this scraper fetches.
+#, is not observable from anything this scraper fetches.
 #
 # Kept as a MARKER because it is safe to be one: the key appears in 0 of 17
 # captures, so its presence in a page's HTML means the site has rendered its
@@ -782,7 +782,7 @@ RECAPTCHA_SITE_KEY = "6LeubLYqAAAAAK7-X6nc1fW2ggot_vTvQAv0RxdU"
 # The site also ships an EMPTY mount point on every page it serves —
 # `<captcha-widgets></captcha-widgets>`, 1 occurrence on all 17 captures,
 # good pages included. So the bare tag is a fact about the site and not a
-# marker (§18), and it is deliberately absent from the list above. What a
+# marker, and it is deliberately absent from the list above. What a
 # rendered challenge would look like is the same element with something
 # INSIDE it, which is a structural question and therefore a function rather
 # than a substring.
@@ -794,7 +794,7 @@ def captcha_mount_is_populated(html: Optional[str]) -> bool:
     """Whether the site's own captcha mount point has rendered anything.
 
     Asked rather than assumed: "did we meet a challenge" and "is one
-    configured" are different questions (§18), and on this site the answer to
+    configured" are different questions, and on this site the answer to
     the second is yes while the answer to the first has been no on every
     capture taken.
     """
@@ -807,7 +807,7 @@ def captcha_mount_is_populated(html: Optional[str]) -> bool:
 
 # The Scraping Browser's auto-solve extension injects its own hunters into
 # every page it loads, so a challenge marker can be OURS rather than the
-# site's (§8). Stripped before the scan because two of the markers above
+# site's. Stripped before the scan because two of the markers above
 # (`recaptcha/api.js`, `challenges.cloudflare.com/turnstile`) are exactly
 # what that extension injects — unlike two sibling repos, where the same
 # guard would have been dead code, this marker set can genuinely match one.
@@ -833,7 +833,7 @@ def detect_block_marker(html: Optional[str]) -> Optional[str]:
 def detect_bot_challenge(html: Optional[str], url: str = "") -> Optional[str]:
     """Which challenge is on this page, or None.
 
-    Broad on purpose (§8): different geos and scenarios surface different
+    Broad on purpose: different geos and scenarios surface different
     challenges, and a detection that only knows the one we happened to meet
     is a detection that fails the first time the site changes vendor.
     """
@@ -865,7 +865,7 @@ NO_RESULTS_MARKERS = (
 def is_no_results(html: Optional[str]) -> bool:
     """Whether the site served this page and told us it holds nothing.
 
-    Ordered by what each signal PROVES, not by what is cheap to check (§17):
+    Ordered by what each signal PROVES, not by what is cheap to check:
     the payload stating `totalHits: 0` is the site's own answer and settles
     it; the sentence is a fallback for a page with no payload.
     """
@@ -879,12 +879,38 @@ def is_no_results(html: Optional[str]) -> bool:
     return any(marker in html for marker in NO_RESULTS_MARKERS)
 
 
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
+
+
+def is_not_found_page(html: Optional[str]) -> bool:
+    """dubizzle's own 404, recognised from the body alone.
+
+    Needed because one engine never sees a status: Selenium's `get()`
+    returns nothing. Measured on the captured 404 against the twelve other
+    captures (listings in four verticals, Arabic, past-the-end, the home
+    hub, two refusals): only the 404 has BOTH an empty `<title>` and a
+    `__NEXT_DATA__` whose `reduxWrapperActionsGIPP` is an empty list. The
+    home hub also has an empty action list, but a real title; every listing
+    has exactly one action. Two conditions, so neither alone decides it.
+    """
+    props = next_data(html)
+    if not isinstance(props, dict):
+        return False
+    page_props = (props.get("props") or {}).get("pageProps") or {}
+    actions = page_props.get("reduxWrapperActionsGIPP") if isinstance(
+        page_props, dict) else None
+    if not (isinstance(actions, list) and not actions):
+        return False
+    title = _TITLE_RE.search(html or "")
+    return title is not None and not title.group(1).strip()
+
+
 def detect_page_state(html: Optional[str], status: Optional[int] = None,
                       url: str = "") -> str:
     """Which of the five states this response is.
 
     Signals are ordered by how much each one PROVES, which on this site is
-    not the order they are cheapest in (§17):
+    not the order they are cheapest in:
 
       1. No body at all              -> blocked. Nothing to read.
       2. An explicit refusal marker  -> blocked, even at HTTP 200, because
@@ -894,7 +920,7 @@ def detect_page_state(html: Optional[str], status: Optional[int] = None,
                                         and Chromium's own network-error
                                         page, whose <title> is the site's
                                         hostname and which carries no vendor
-                                        marker at all (§18).
+                                        marker at all.
       4. A challenge widget          -> challenge.
       5. The payload names hits      -> content. Positive and unambiguous.
       6. The payload says zero       -> empty. Checked AFTER content so a
@@ -922,6 +948,9 @@ def detect_page_state(html: Optional[str], status: Optional[int] = None,
     if status is not None and status >= 400:
         # Served by dubizzle, no grid, and the site said so with a status.
         # A 404 category is an empty answer, not a refusal.
+        return "empty"
+    if is_not_found_page(html):
+        # The same 404, for an engine that has no status to pass.
         return "empty"
     if url and listing_kind(url) != "listing":
         # A HUB, not a grid: `uae.dubizzle.com/` and `/jobs/` are landing
@@ -955,7 +984,7 @@ def jsonld_blocks(html: Optional[str]) -> List[Any]:
 
 
 def _ld_image(value: Any) -> Optional[str]:
-    """A schema.org `image` in any of its four legal shapes (§4)."""
+    """A schema.org `image` in any of its four legal shapes."""
     if isinstance(value, str):
         return value or None
     if isinstance(value, dict):
@@ -973,7 +1002,7 @@ def _ld_offer(value: Any) -> dict:
 
     `.get("offers", {})` is not enough: a JSON null is a PRESENT key, so the
     default never applies and the caller gets None where it expected a dict
-    (§4's first row).
+   .
     """
     if isinstance(value, dict):
         return value
@@ -1018,7 +1047,7 @@ def jsonld_items_by_url(html: Optional[str]) -> Dict[str, dict]:
 
 def jsonld_currency(html: Optional[str]) -> Optional[str]:
     """`priceCurrency` from the page's AggregateOffer — the site naming its
-    own currency, which outranks anything read off the DOM (§4)."""
+    own currency, which outranks anything read off the DOM."""
     for block in jsonld_blocks(html):
         if isinstance(block, dict):
             code = _ld_offer(block.get("offers")).get("priceCurrency")
@@ -1120,7 +1149,7 @@ def _discount(price: Optional[float],
     `pre_discount_price: 0` is how this site writes "no discount", and a
     naive read turns it into a 100%-off car. Anything not strictly above the
     price produces None for BOTH columns — two figures that are not what they
-    were taken for should produce no number at all (§4).
+    were taken for should produce no number at all.
     """
     if price is None or original is None:
         return None, None
@@ -1240,7 +1269,7 @@ def parse_products(html: str, url: str, page: int = 1,
                    category: Optional[str] = None) -> List[Product]:
     """Rows for one listing page, in the payload's own order.
 
-    Payload order is page order, which is what §8 requires: a dedupe that
+    Payload order is page order, which is what a deterministic merge needs: a dedupe that
     mutates a running set inside a fetch loop makes the output depend on
     which page finished first.
 
@@ -1289,7 +1318,7 @@ def parse_products(html: str, url: str, page: int = 1,
 def _tile_of(anchor: Any) -> Any:
     """The smallest ancestor that still covers exactly ONE ad.
 
-    Counts distinct ad URLs, not links (§4). Capped at 8 levels so a
+    Counts distinct ad URLs, not links. Capped at 8 levels so a
     malformed document cannot walk to <body>: on this site the tile is one
     level up and the grid — 26 ads — is two, so stopping late would give
     every row its neighbours' price.

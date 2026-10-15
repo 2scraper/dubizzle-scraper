@@ -2,7 +2,7 @@
 
 dubizzle answers a request five ways, and four of them want a different
 response, which is why this module exists rather than the same triage being
-written three times inside three engines and drifting apart (§1):
+written three times inside three engines and drifting apart:
 
     content    the site served its listing payload
     empty      served exactly as asked and holding no listing — a page past
@@ -29,7 +29,7 @@ passes its own driver's primitives and keeps its browser plumbing to itself:
     content() -> Optional[str]      current HTML, None if unavailable
     sleep(ms) -> None               wait
 
-No JavaScript crosses that boundary in either direction (§1): Selenium's
+No JavaScript crosses that boundary in either direction: Selenium's
 `execute_script` takes a function BODY with an explicit `return` where
 Playwright and pyppeteer take `() => expr`, so the shared module names the
 OPERATION and the engine spells it in its own driver's dialect.
@@ -64,8 +64,8 @@ logger = logging.getLogger("page_flow")
 # ---------------------------------------------------------------------------
 # Readiness
 # ---------------------------------------------------------------------------
-# The anchor is a price node WITH SOMETHING IN IT, not a card count, for the
-# reason §8 gives: a selector matching the wrong element is worse than one
+# The anchor is a price node WITH SOMETHING IN IT, not a card count, because
+# a selector matching the wrong element is worse than one
 # matching nothing. A tile's shell and its price node can both exist while
 # the amount is still blank, and a wait satisfied by the shell is a wait that
 # did not wait.
@@ -80,7 +80,7 @@ logger = logging.getLogger("page_flow")
 # agree.
 READY_SELECTOR_LISTING = '[data-testid="listing-price"]'
 
-# Above 1, per §5: waiting for a single match resolves on an unrelated node
+# Above 1: waiting for a single match resolves on an unrelated node
 # long before a grid paints. Below the smallest real page, which is 25 ads on
 # motors, classified, jobs and community and 35 on both property indexes —
 # so 8 leaves room for a page that is genuinely short (a jobs category with
@@ -112,7 +112,7 @@ def min_matches(mode: str = "listing", expected: Optional[int] = None) -> int:
     this site states it: a last page of a jobs category holds 23 ads and
     waiting for 8 of them is right, while waiting for 8 on a page that holds
     3 would time out on a page that is fully painted. Never above the floor
-    and never below 2 (§5).
+    and never below 2.
     """
     floor = _MIN.get(mode, MIN_CARD_MATCHES)
     if expected is None:
@@ -148,7 +148,7 @@ def wait_for_count(count: Callable[[str], int], sleep: Callable[[int], None],
     `EvalError: Evaluating a string as JavaScript violates the following
     Content Security Policy directive` on a site whose CSP has no
     `unsafe-eval`, and took the run down with exit 1 on the site's most
-    obvious URL (§18). Counting elements goes through the protocol and works
+    obvious URL. Counting elements goes through the protocol and works
     under any CSP, and spells the same in all three drivers.
     """
     waited = 0
@@ -177,7 +177,7 @@ def classify(html: Optional[str], status: Optional[int] = None,
     Getting that wrong is not a style question: a sibling repo shipped two of
     three engines calling this as `classify(html, url=...)`, both crashed on
     their first fetch, and nothing short of a live run or a signature-binding
-    check saw it (§17).
+    check saw it.
     """
     if html is None:
         return "blocked"
@@ -185,7 +185,7 @@ def classify(html: Optional[str], status: Optional[int] = None,
 
 
 # The retry/solve/blocked decision as DATA rather than as three copies of an
-# if-chain in three engines (§1).
+# if-chain in three engines.
 #
 #   parse    is there anything on this page worth writing down?
 #   retry    would fetching it again, from a different exit, plausibly help?
@@ -203,7 +203,7 @@ STATE_POLICY: Dict[str, Dict[str, bool]] = {
     # results. A hub URL is the same story with 45 rail links instead of one.
     "empty":     {"parse": False, "retry": False, "solve": False, "blocked": False},
     # Served, and still painting. Wants the readiness wait, not another
-    # fetch: refetching a shell just buys another shell (§18).
+    # fetch: refetching a shell just buys another shell.
     "shell":     {"parse": True,  "retry": False, "solve": False, "blocked": False},
     "challenge": {"parse": False, "retry": True,  "solve": True,  "blocked": False},
     "blocked":   {"parse": False, "retry": True,  "solve": False, "blocked": True},
@@ -252,7 +252,7 @@ def is_unpainted(state: str, html: Optional[str]) -> bool:
 # the country the site serves. A retry from a different exit is worth
 # spending, and the engines read these constants rather than computing their
 # own budget — a policy constant nothing consults is the same defect as dead
-# code (§17).
+# code.
 RETRY_ON_BLOCKED = True
 BLOCK_RETRIES_WITHOUT_POOL = 1
 BLOCK_RETRIES_WITH_POOL = 3
@@ -260,6 +260,51 @@ BLOCK_RETRIES_WITH_POOL = 3
 # One solve per page. Detection is broad on purpose, but a second solve on
 # the same page has never been the answer to the first one failing.
 SOLVES_PER_PAGE = 1
+
+
+class SolveBudget:
+    """The one allowance every paid solve on a page goes through.
+
+    Created once per page by each engine's `_fetch_one_page` and handed to
+    BOTH places that can buy a token: the check that runs right after
+    navigation (so a challenge is cleared before anything is judged) and the
+    one that runs after classification, for the state that says the page
+    really is gated. The allowance used to be counted at the second place
+    only, so the first one bought a token on every block-retry: with the
+    solver stubbed, one page made 3 purchases against a limit of 1.
+
+    `allows()` is checked immediately BEFORE a purchase and `spend()` records
+    one; detecting a challenge and deciding not to solve it costs nothing.
+    It is deliberately NOT reset by a retry or an exit rotation: a fresh exit
+    is a reason to fetch again, not a fresh allowance to spend.
+    """
+
+    def __init__(self, limit: int = SOLVES_PER_PAGE):
+        self.limit = limit
+        self.spent = 0
+
+    def allows(self) -> bool:
+        return self.spent < self.limit
+
+    def spend(self) -> None:
+        self.spent += 1
+
+
+def failure_reason(outcome) -> str:
+    """The stop reason for a page that did not yield data.
+
+    One function for every path in every engine, so page 1, the sequential
+    loop and the concurrent workers cannot name the same failure three ways.
+    `parser_found_nothing` is a page the site SERVED with ads in its payload
+    that the parser turned into zero rows — a reading failure on our side,
+    not an empty listing, so it must not end as exit 4 ("nothing listed")
+    or, on page 2 and later, as a complete run.
+    """
+    if getattr(outcome, "load_failed", False):
+        return "page_load_timeout"
+    if getattr(outcome, "parse_failed", False):
+        return "parser_found_nothing"
+    return f"blocked_{outcome.blocked_by}"
 
 
 def block_advice(html: Optional[str], headless: bool,
@@ -289,7 +334,7 @@ def block_advice(html: Optional[str], headless: bool,
 # ---------------------------------------------------------------------------
 # Pagination
 # ---------------------------------------------------------------------------
-# Three layers, weakest last (§7), and on this site every one of them is
+# Three layers, weakest last, and on this site every one of them is
 # available and they agree:
 #
 #   1. `<link rel="next">` in <head> — a standards-based signal, present on
@@ -319,7 +364,7 @@ def pagination_is_addressable(page1_url: str,
                               next_href: Optional[str] = None) -> bool:
     """Whether page N can be fetched without walking pages 2..N-1.
 
-    True for every listing grid here, and verified the way §7 asks rather
+    True for every listing grid here, and verified rather
     than assumed: page 1's own `<link rel="next">` is
     `https://uae.dubizzle.com/motors/used-cars/?page=2`, which is exactly
     what the convention builds, and the fetched page 2 reported
@@ -344,7 +389,7 @@ def _resolve(base_url: str, href: str) -> str:
     so a comparison that does not resolve first fails for half the links it
     is given. That reads as "the site's link disagrees with the convention",
     which sends the caller down the link-chaining path and quietly costs it
-    `--concurrency` (§7) — while looking like a deliberate safety decision.
+    `--concurrency` — while looking like a deliberate safety decision.
     """
     return urljoin(base_url, href) if href else href
 
@@ -358,7 +403,7 @@ def _as_hrefs(next_href: Union[str, Iterable[str], None]) -> List[str]:
     is what took a sibling repo's FIRST live run down — `TypeError: Cannot
     mix str and non-str arguments`, from `urljoin` being handed a list — and
     nothing short of running it saw that, because the offline checks called
-    it the way its author was thinking (§17).
+    it the way its author was thinking.
     """
     if next_href is None:
         return []
@@ -455,7 +500,7 @@ def concurrency_limit(url: str) -> Optional[int]:
 def concurrency_refusal(url: str) -> Optional[str]:
     """Why concurrency above 1 is refused for this URL, or None.
 
-    Refused WITH the reason (§18): an individual ad and a hub page have no
+    Refused WITH the reason: an individual ad and a hub page have no
     page 2 at all, so there is nothing for a second worker to fetch, and
     silently running one worker would look like the flag did something.
     """
@@ -514,3 +559,41 @@ def attempts(value) -> int:
             f"With 0 the load loop never runs, nothing is fetched, and the "
             f"engine reports the browser's blank page as a result.")
     return number
+
+
+def _bounded_number(flag: str, cast, minimum, what: str):
+    """An argparse `type=` that rejects a value below `minimum`, naming `flag`.
+
+    A negative page count, delay or worker count is never what the caller
+    meant, and argparse accepts all of them silently. `--delay -1` reaches
+    `time.sleep(-1)`, which raises ValueError between page 1 and page 2, so
+    the run dies with a traceback after doing real work; `--pages 0` and
+    `--concurrency 0` are silently read as 1.
+    """
+    def check(value):
+        try:
+            number = cast(value)
+        except (TypeError, ValueError):
+            raise _argparse.ArgumentTypeError(
+                f"{flag} must be {what}, not {value!r}")
+        if number < minimum:
+            raise _argparse.ArgumentTypeError(
+                f"{flag} must be at least {minimum}, not {value}")
+        return number
+    check.__name__ = "at_least_%s" % str(minimum).replace(".", "_")
+    return check
+
+
+def positive_int(flag: str):
+    """`type=` for a count that must be 1 or more (--pages, --concurrency)."""
+    return _bounded_number(flag, int, 1, "an integer")
+
+
+def non_negative_int(flag: str):
+    """`type=` for a count where 0 is meaningful (--proxy-block-retries)."""
+    return _bounded_number(flag, int, 0, "an integer")
+
+
+def non_negative_float(flag: str):
+    """`type=` for a number of seconds (--delay, --retry-delay)."""
+    return _bounded_number(flag, float, 0, "a number")

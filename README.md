@@ -179,8 +179,10 @@ rather than `changed`.
 
 ### Exit codes
 
-`0` ok · `1` crash · `2` bad usage · `3` blocked · `4` zero ads · `5` remote
-API error · `6` partial. Every run writes `<out>.meta.json` beside its output
+`0` ok · `1` crash · `2` bad usage · `3` blocked · `4` zero ads · `5` the
+content was never obtained (a navigation timeout, a dead proxy, a refused
+remote endpoint, or a served page with ads in its payload that parsed to zero
+rows — `stop_reason: parser_found_nothing`) · `6` partial. Every run writes `<out>.meta.json` beside its output
 with `status`, `stop_reason` and **which** pages failed by number. A failed
 run writes no sidecar and leaves the previous good output in place — a run
 that finds nothing does not overwrite last night's data unless you pass
@@ -504,12 +506,12 @@ and a check that no `.env`, test suite or fixture was baked in.
 
 **What the canary badge here does and does not mean.** The workflow is a real
 three-page run against a real listing URL, with a floor on the rows,
-page+position uniqueness and a dozen other assertions. But this repository
-deliberately holds **no live credential**, so the live steps are skipped and
-the job goes green with a `::notice::` saying why — a check that is always red
-teaches everyone to ignore checks, and a check that is always green teaches
-the same lesson more quietly. So read the green canary badge as *"the workflow
-is wired up"*, not as *"the site was verified today"*.
+page+position uniqueness and a dozen other assertions, run weekly and on
+demand. It needs a UAE exit, so it reads a `DUBIZZLE_CDP_ENDPOINT` secret;
+**without that secret the job fails** and names it, and a blocked, partial or
+never-obtained run is red too. A green badge therefore means the site was
+read and parsed on that run, and a red one says in its summary whether the
+cause was access or the parser.
 
 To make it do real work in your own fork, set one secret and change nothing
 else:

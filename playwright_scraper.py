@@ -13,7 +13,7 @@ There is deliberately no `--country` flag and no detail-page mode. The
 language is a path segment on a single platform, so a country flag could only
 disagree with the URL it was given; a detail mode is not shipped because the
 ad pages were not measured, and a mode whose markup nobody has read is a mode
-that reports success without checking (§8).
+that reports success without checking.
 
 WHAT IS DIFFERENT ABOUT THIS SITE
 ---------------------------------
@@ -174,9 +174,14 @@ class PageOutcome:
     # reported it as complete would read as a shrinking catalogue.
     scroll: Optional[dict] = None
 
+    # Served with ads in the payload, parsed to zero rows: our failure, not
+    # an empty listing. See page_flow.failure_reason.
+    parse_failed: bool = False
+
     @property
     def ok(self) -> bool:
-        return not self.load_failed and self.blocked_by is None
+        return (not self.load_failed and self.blocked_by is None
+                and not self.parse_failed)
 
 
 ITEM_LINK_SELECTOR = page_flow.READY_SELECTOR_LISTING
@@ -383,10 +388,9 @@ def _same_url(a: str, b: str) -> bool:
     fetching — the exact divergence page_flow.py exists to prevent,
     reproduced inside one engine.
 
-    On this site the comparison has to strip a long tracking tail: a listing
-    anchor arrives with `?extParam=…keyword=kopi&search_id=…&src=search` and
-    a detail page's own canonical arrives with a UTM triple, so two views of
-    one page never match unless both sides are cleaned.
+    The comparison drops campaign parameters (`utm_*` and the rest of
+    product_parser.TRACKING_PARAMS), a `www.` prefix and a trailing slash,
+    so two spellings of one dubizzle page compare equal.
     """
     return page_flow.comparable(a) == page_flow.comparable(b)
 
@@ -602,8 +606,8 @@ def _content_when_settled(page, attempts: int = 4, pause_ms: int = 700):
 
     Playwright raises `Page.content: Unable to retrieve content because the
     page is navigating and changing the content` if the document swaps under
-    it. dubizzle does not geo-redirect: the locale is a path segment, and euro
-    from two exit countries — but its shell navigates on its own during
+    it. dubizzle does not geo-redirect (the locale is a path segment), but
+    its shell navigates on its own during
     hydration, and the remote Scraping Browser target was observed closing
     mid-scroll on three of six captures, so a snapshot taken right after
     goto() can land exactly on a swap.
@@ -628,7 +632,7 @@ def _content_when_settled(page, attempts: int = 4, pause_ms: int = 700):
     return None
 
 
-def handle_captcha_if_present(page, args) -> bool:
+def handle_captcha_if_present(page, args, budget=None) -> bool:
     """Detect and solve a challenge. True if something was solved.
 
     Runs after EVERY navigation, for ANY page — not scoped to one URL. The
@@ -685,6 +689,16 @@ def handle_captcha_if_present(page, args) -> bool:
                        "solved — continuing with whatever the page already "
                        "holds.")
         return False
+    # Checked immediately before the purchase, against the page's single
+    # allowance (page_flow.SolveBudget), so the pre- and post-classification
+    # calls together cannot buy more than SOLVES_PER_PAGE tokens.
+    if budget is None or not budget.allows():
+        logger.info("Not solving: this page's solve allowance (%d) is spent. "
+                    "A challenge that survives a solved token is not one this "
+                    "run can pass, and a second solve is a second charge.",
+                    page_flow.SOLVES_PER_PAGE)
+        return False
+    budget.spend()
     try:
         token = solve_recaptcha(challenge, args.twocaptcha_key,
                                api_version=args.captcha_api,
@@ -713,7 +727,7 @@ def _parse_for_mode(html: str, url: str, args, page_num: int = 1) -> List:
     restarts at 1 on every page: without the page number beside it, a row
     from page 2 claims the same position as one from page 1 and the two are
     indistinguishable in the output. A sibling repo's first live run wrote
-    120 rows all labelled page 1 for exactly that reason (§18).
+    120 rows all labelled page 1 for exactly that reason.
     """
     return parse_products(html, url, page=page_num, category=args.category)
 
@@ -752,11 +766,20 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     block_retries = 0 if not page_flow.RETRY_ON_BLOCKED else (
         args.proxy_block_retries if has_pool
         else page_flow.BLOCK_RETRIES_WITHOUT_POOL)
-    # Counted across the whole block-retry loop, not per attempt: a page that
+    # ONE allowance for every paid solve on this page, handed to both call
+    # sites below and counted across the whole block-retry loop: a page that
     # keeps coming back as a challenge would otherwise buy one solve per
-    # rotation, which is how a run quietly turns into a bill.
-    solves_bought = 0
+    # rotation, which is how a run quietly turns into a bill. See
+    # page_flow.SolveBudget.
+    budget = page_flow.SolveBudget(page_flow.SOLVES_PER_PAGE)
     html, state, load_failed = None, "ok", False
+    # The HTTP status of the navigation, handed to the classifier. Without
+    # it a 404 category — which dubizzle serves with its asset references but
+    # no grid — classified as a `shell`, cost the full readiness wait and was
+    # then parsed. Reset to None whenever the document changes under us (a
+    # solve reloads the page), so a later page is judged by what it holds
+    # rather than by the status of the one it replaced.
+    status = None
 
     for block_attempt in range(block_retries + 1):
         logger.info("Fetching page %d/%d: %s", page_num, args.pages, url)
@@ -765,7 +788,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         load_failed, exit_failed = False, None
         for attempt in range(1, args.retries + 1):
             try:
-                session.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                response = session.page.goto(url, wait_until="domcontentloaded",
+                                             timeout=60000)
+                status = response.status if response is not None else None
                 load_failed = False
                 break
             except (PWTimeout, PWError) as e:
@@ -797,25 +822,23 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         if load_failed:
             break
 
-        if handle_captcha_if_present(session.page, args):
+        if handle_captcha_if_present(session.page, args, budget):
             # A solve navigated the page. Give the destination a moment
             # before judging what came back.
             session.page.wait_for_timeout(1000)
+            status = None
 
         html = _content_when_settled(session.page) or ""
-        state = _classify(session.page, html)
+        state = _classify(session.page, html, status)
 
-        # "Not painted yet" is not a fault, and telling it apart from one is
-        # what the first live search run of this engine got wrong. A CATEGORY
-        # listing server-renders its grid container, so it classifies as
-        # content at domcontentloaded; a SEARCH grid arrives with the
-        # client-side GraphQL response, so at that moment the page is a
-        # 608 KB shell with no grid in it. Classified naively that is
-        # "unknown", "unknown" retries, and the run fetched the page twice,
-        # scrolled not at all and reported 0 rows with exit 4.
-        #
-        # So wait for the anchor and re-classify BEFORE the retry decision.
-        # See page_flow.is_unpainted.
+        # "Not painted yet" is not a fault. A page dubizzle served (it is
+        # built from the site's own assets) but whose listings payload is not
+        # in the document yet classifies as `shell`. Fetching it again would
+        # only buy another shell, so wait for the anchor and re-classify
+        # BEFORE the retry decision. None of the captured pages in
+        # fixtures_generated.json is a shell — a category grid arrives
+        # server-rendered — so this wait is a safety net, not a measured
+        # path. See page_flow.is_unpainted.
         if page_flow.is_unpainted(state, html):
             wait_timeout = page_flow.content_timeout_ms(args.mode)
             logger.info("Page %d is a shell the site served but has not "
@@ -830,7 +853,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
                 logger.info("The grid still had not painted after %.0fs "
                             "(%d match(es)).", wait_timeout / 1000, found)
             html = _content_when_settled(session.page) or html
-            state = _classify(session.page, html)
+            state = _classify(session.page, html, status)
 
         # No interstitial-settling step here, and its absence is measured
         # rather than an omission. This site has no interstitial to settle: a
@@ -844,12 +867,12 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         # cannot name what stopped it is much harder to fix — and bounded by
         # SOLVES_PER_PAGE so a speculative path cannot become a bill.
         if (page_flow.should_solve(state)
-                and solves_bought < page_flow.SOLVES_PER_PAGE):
-            solves_bought += 1
-            if handle_captcha_if_present(session.page, args):
+                and budget.allows()):
+            if handle_captcha_if_present(session.page, args, budget):
                 session.page.wait_for_timeout(1000)
+                status = None
                 html = _content_when_settled(session.page) or html
-                state = _classify(session.page, html)
+                state = _classify(session.page, html, status)
                 # The VERIFIED outcome, and the only one worth reporting: a
                 # "ready" task result is not evidence the token works. This
                 # line is what says whether the money bought anything.
@@ -873,8 +896,9 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         # Blocked or challenged. A different exit is the one thing that
         # plausibly changes the outcome: the ADDRESS is what was scored, not
         # the URL, so retrying it unchanged would only confirm it. Measured
-        # 2026-09-09 — the same URL that answers 403 from a datacentre exit
-        # answers 200 from a residential one.
+        # 2026-09-14 — the same listing refused to a European residential
+        # exit and to a Finnish datacentre exit was served in full to a UAE
+        # residential one (see page_flow's notes above RETRY_ON_BLOCKED).
         if block_attempt < block_retries:
             if has_pool:
                 logger.warning("Page %d came back as %s from %s — retrying "
@@ -951,10 +975,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
         #
         # NO scroll follows, and that is measured: three scrolls to the
         # document's own bottom added zero cards and left the page height
-        # unchanged on all three page kinds. The whole page is served at once,
-        # so without the scroll below a listing run returns whatever the
-        # first batch happened to have painted. Measured on one search URL:
-        # 11 tiles at round 0, 95 after one scroll.
+        # unchanged on all three page kinds. The whole page is served at once.
         selector, threshold = _ready_selector(args), _min_matches(args, html)
         content_timeout = page_flow.content_timeout_ms(args.mode)
         # A POLL, not wait_for_function. This site's CSP does allow
@@ -967,13 +988,10 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
             session.page.wait_for_timeout, selector, threshold, content_timeout)
         session.page.wait_for_timeout(500)
         if found <= threshold:
-            # Not an error on its own, and what it MEANS depends on the
-            # mode — which is why the message does too. A listing page with
-            # no grid is a correct answer (a taxonomy hub, or one page past
-            # the end); a detail page whose buy box never painted is a
-            # different thing entirely, and on this site it is usually just
-            # slow rather than absent, because the row is parsed out of the
-            # page's JSON-LD and not out of the buy box.
+            # Not an error on its own. A listing page with no grid is a
+            # correct answer (a hub page, or one page past the end), and
+            # classification has already told those apart from a page whose
+            # payload names ads.
             logger.info("No listing tiles appeared within %.0fs. If this "
                         "URL is a hub page or one page "
                         "past the end of a listing, that is the expected "
@@ -1004,7 +1022,7 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
     # so this runs only for a state the policy has already given up on and
     # only REFINES the reason.
     #
-    # The marker set itself is chosen the same way (§18): `_Incapsula_Resource`
+    # The marker set itself is chosen the same way: `_Incapsula_Resource`
     # on its own is NOT in it, because it appears once on pages dubizzle
     # plainly served — a marker that matches a good page is worse than no
     # marker.
@@ -1050,14 +1068,26 @@ def _fetch_one_page(session, args, pool, page_num: int, url: str) -> PageOutcome
                 if page_flow.should_parse(state) else [])
     logger.info("Parsed %d row(s) from page %d.", len(products), page_num)
 
-    # This site DOES publish a result total, in its own payload, so the
-    # arithmetic completeness check is available here. What it does not have
-    # is a printed header worth reading — the old note about
-    # untuk "kopi"" — and the total is empty on every capture; the range it
-    # does print is not a count of loaded rows either (it claimed 61-180
-    # while the DOM held 95). So the header is recorded verbatim and
-    # `total_available` stays None rather than carrying a number nobody can
-    # act on.
+    # A page classified `content` has ads in its own payload — that is what
+    # the classifier keys on — so zero rows from it is OUR reading failing,
+    # not an empty listing. Marked as a failed page so the run cannot end as
+    # exit 4 ("nothing listed") on page 1 or as a complete run on page 2+;
+    # finish_run then reports exit 5 with no rows or exit 6 with some.
+    if state == "content" and not products:
+        outcome.parse_failed = True
+        logger.error("Page %d was served with ads in its payload (the "
+                     "payload's own total: %s) and parsed to 0 rows. That is "
+                     "a parser failure, not an empty listing — the site's "
+                     "markup has probably changed. Re-run with --dump-html "
+                     "and compare against the fixtures.", page_num,
+                     total_results(html))
+
+    # This site DOES publish a result total, in its own payload
+    # (`pagination.totalHits`), so `total_available` is read from there and
+    # the arithmetic completeness check below is available. The "header"
+    # recorded beside it is the Algolia index the page queried
+    # (product_parser.search_header), the closest thing the page states to
+    # "what was asked for".
     if args.mode == "listing" and page_num == 1:
         outcome.total_available = total_results(html)
         outcome.header = search_header(html)
@@ -1270,8 +1300,7 @@ def scrape(args) -> int:
             outcomes.append(first)
 
             if not first.ok:
-                stop_reason = ("page_load_timeout" if first.load_failed
-                               else f"blocked_{first.blocked_by}")
+                stop_reason = page_flow.failure_reason(first)
                 blocked = first.blocked_by is not None
             seen_keys.update(p.sku for p in first.products if p.sku is not None)
             planned = _plan_page_urls(session.page, args, first.final_url)
@@ -1299,8 +1328,7 @@ def scrape(args) -> int:
                 failed = [o for o in rest if not o.ok]
                 if failed:
                     worst = min(failed, key=lambda o: o.page_num)
-                    stop_reason = ("page_load_timeout" if worst.load_failed
-                                   else f"blocked_{worst.blocked_by}")
+                    stop_reason = page_flow.failure_reason(worst)
                     blocked = any(o.blocked_by for o in rest)
                 elif exhausted:
                     stop_reason = "no_new_products"
@@ -1323,8 +1351,7 @@ def scrape(args) -> int:
                     outcome = _fetch_one_page(session, args, pool, page_num, url)
                     outcomes.append(outcome)
                     if not outcome.ok:
-                        stop_reason = ("page_load_timeout" if outcome.load_failed
-                                       else f"blocked_{outcome.blocked_by}")
+                        stop_reason = page_flow.failure_reason(outcome)
                         blocked = outcome.blocked_by is not None
                         break
 
@@ -1502,13 +1529,13 @@ def parse_args():
                         "fact about the ad rather than about the request — "
                         "the browsed URL is in the run's sidecar. Pass this "
                         "to override it with a label of your own.")
-    p.add_argument("--pages", type=int, default=1,
+    p.add_argument("--pages", type=page_flow.positive_int("--pages"), default=1,
                    help="Number of listing pages to crawl. Applies to "
                         "--mode listing, which is the only mode. Every "
                         "listing page has its own ?page=N address, and the "
                         "site's own totalPages caps how many there are.")
-    p.add_argument("--delay", type=float, default=2.0, help="Delay between pages, seconds")
-    p.add_argument("--concurrency", type=int, default=1, metavar="N",
+    p.add_argument("--delay", type=page_flow.non_negative_float("--delay"), default=2.0, help="Delay between pages, seconds")
+    p.add_argument("--concurrency", type=page_flow.positive_int("--concurrency"), default=1, metavar="N",
                    help="Fetch pages through N parallel workers (default 1 — "
                         "unchanged sequential behaviour). Each worker runs its "
                         "own browser and holds its own proxy exit, so N>1 "
@@ -1520,7 +1547,7 @@ def parse_args():
                         "that comes back EMPTY is not retried — see "
                         "page_flow.STATE_POLICY — because an empty hub "
                         "category is a correct answer, not a fault.")
-    p.add_argument("--retry-delay", type=float, default=2.0,
+    p.add_argument("--retry-delay", type=page_flow.non_negative_float("--retry-delay"), default=2.0,
                    help="Seconds before the first page-load retry, doubling "
                         "thereafter (default 2.0)")
     p.add_argument("--format", choices=["json", "csv", "both"], default="both")
@@ -1547,7 +1574,8 @@ def parse_args():
     p.add_argument("--proxy-shuffle", action="store_true",
                    help="Shuffle the pool at startup, so concurrent runs do not "
                         "all begin on the first exit in the file.")
-    p.add_argument("--proxy-block-retries", type=int,
+    p.add_argument("--proxy-block-retries",
+                   type=page_flow.non_negative_int("--proxy-block-retries"),
                    default=page_flow.BLOCK_RETRIES_WITH_POOL,
                    help="When a page comes back refused, retry it from this "
                         "many OTHER exits before giving up (default %d, from "
