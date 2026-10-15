@@ -83,7 +83,7 @@ CREDENTIAL_ALLOWED = (
 # dubizzle publishes ends in `---{32 hex}`, and the committed fixtures,
 # sample output and documentation are full of them by design. A pattern that
 # cannot tell the two apart fails on its own repository on day one — which is
-# how a check stops being read (§17) — so the ad-id shape is subtracted from
+# how a check stops being read — so the ad-id shape is subtracted from
 # the text BEFORE the scan rather than added to a context allowlist. A bare
 # 32-hex string anywhere else still fails, which is the point.
 HEX32 = re.compile(r"\b[0-9a-f]{32}\b")
@@ -242,6 +242,12 @@ CAPTURE_SHAPES = (
     re.compile(r"_debug\.(?:html|png)$"),
     re.compile(r"^live_results\."),
     re.compile(r"^captures?/"),
+    # Working directories by KIND rather than by one name, and a bare HTML
+    # file at the root: a dump arrives through whatever directory someone
+    # called it. Narrow enough to leave .github/, tests/ and the generated
+    # fixtures alone, which the suite pins.
+    re.compile(r"(?:^|/)(?:live|out|output|runs?|results?|tmp|scratch|dumps?)/"),
+    re.compile(r"^[^/]+\.html?$"),
 )
 
 
@@ -269,7 +275,7 @@ def tracked_files():
 # into pip's vendored code and flags a 32-hex string in `_elffile.py` as
 # key-shaped. Correct about the string, wrong about the file — and it is the
 # FIRST thing a new user sees from `python3 smoke_test.py`. A guard people
-# have to argue with is one they learn to suppress (CLAUDE.md §22).
+# have to argue with is one they learn to suppress.
 #
 # Deliberately NOT a narrowing of what gets scanned: an untracked file is
 # still read, because a key pasted into a scratch file beside the scripts is

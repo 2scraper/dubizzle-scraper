@@ -28,9 +28,9 @@ name: canary
 # secret with `region-ae` would work as well; the CDP path is the one
 # measured here.
 #
-# The live steps are SKIPPED, not failed, when the secret is absent. The job
-# goes green with a notice saying why. A check that is always red teaches
-# everyone to ignore checks, which is worse than having no check at all. Set
+# Without that secret the job FAILS, naming the missing secret. A canary that
+# skipped, was blocked, reached nothing or parsed nothing has not tested the
+# site, and a green badge for it would read as "the parser still works". Set
 # the secret and the same workflow starts doing real work with no edit:
 #
 #     gh secret set DUBIZZLE_CDP_ENDPOINT --repo 2scraper/dubizzle-scraper
@@ -49,19 +49,14 @@ name: canary
 # loader already treats as "not configured", so there is no commented-out
 # line for someone to forget to uncomment.
 #
-# ON DEMAND, NOT ON A SCHEDULE — forced by the credential rather than chosen.
-# A Scraping Browser endpoint on these accounts does not survive long: of the
-# credentials inherited from the sibling repos in this family, most were
-# already returning 401 when this repo was written. A daily cron against a
-# credential with that lifetime produces one of two useless outcomes: a red
-# badge every day, or a green badge every day that has tested nothing. The
-# second is the more dangerous, because green reads as "the parser still
-# works".
-#
-# Put the schedule back the day a long-lived credential exists:
-#     schedule:
-#       - cron: "23 6 * * *"
+# WEEKLY, and on demand. The schedule used to be removed on the argument
+# that a Scraping Browser credential does not live long; that lifetime was
+# never measured on this repo, and a sibling's endpoint stayed valid for more
+# than ten days. If the credential has stopped working, the run says so in
+# red (exit 5, with the HTTP status in the log), which is the point.
 on:
+  schedule:
+    - cron: "23 6 * * 1"
   workflow_dispatch:
 
 jobs:
@@ -74,10 +69,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Explain a skipped run
+      - name: Fail when the live run cannot happen
         if: env.HAVE_CDP != 'true'
         run: |
-          echo "::notice::Skipping the live run: no DUBIZZLE_CDP_ENDPOINT secret is set."
+          echo "::error::No DUBIZZLE_CDP_ENDPOINT secret is set, so this canary cannot reach dubizzle and tested nothing."
           echo "Imperva refuses this site to any exit outside the UAE - a European"
           echo "residential address got HTTP 403 and a Finnish datacentre address"
           echo "got a 'Pardon Our Interruption' page under HTTP 200. A GitHub"
@@ -90,6 +85,7 @@ jobs:
           echo
           echo "The offline suite (tests.yml) covers everything that does not"
           echo "need the network, and it runs on every push."
+          exit 1
 
       - uses: actions/setup-python@v5
         if: env.HAVE_CDP == 'true'
@@ -135,64 +131,57 @@ jobs:
         continue-on-error: true
         env:
           DUBIZZLE_CDP_ENDPOINT: ${{ secrets.DUBIZZLE_CDP_ENDPOINT }}
+        #
+        # The log is kept (tee) because a parser failure is named only there:
+        # a page served with ads in its payload that parses to zero rows ends
+        # the run with stop_reason `parser_found_nothing` and exit 5 (or 6
+        # with rows from earlier pages), and the verdict below must fail on
+        # that by name rather than read it as an access condition.
         run: |
           set +e
           python3 playwright_scraper.py \
             --url "https://uae.dubizzle.com/motors/used-cars/" \
-            --pages 3 --retries 4 --out canary_run --dump-html canary_run.html
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+            --pages 3 --retries 4 --out canary_run --dump-html canary_run.html \
+            2>&1 | tee canary_run.log
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Interpret the exit code
         id: verdict
         if: env.HAVE_CDP == 'true'
-        # ACCESS CONDITIONS ARE NOT DEFECTS, and on this site that
-        # distinction decides whether the badge means anything.
-        #
-        # Failing the job on ANY non-zero exit makes the canary red for two
-        # things that are nobody's bug:
-        #
-        #   * the SECRET EXPIRED. A Scraping Browser credential is not
-        #     forever. When it stops authenticating the run exits 5.
-        #   * ACCESS IS INTERMITTENT PER PROFILE, and a profile allows one
-        #     live connection. A canary that collides with a person's run
-        #     exits 5 with `profile_locked`, which says nothing about the
-        #     site or the code.
-        #
-        # So: 3 (blocked), 5 (remote API error) and 6 (partial) are reported
-        # as WARNINGS and do not fail the job. What stays red is a run that
-        # got in and found the wrong thing, or one that broke:
-        #
-        #   1  crashed
-        #   2  the workflow's own arguments are wrong
-        #   4  served a page and parsed ZERO rows from a motors listing that
-        #      holds 25 ads per page — the payload action or the tile anchor
-        #      moved, which is exactly what this canary exists to catch
-        #
-        # A warning must not read as a pass, either. Each one writes to the
-        # step summary as well, so the run page says in words that the canary
-        # did not actually test anything this time.
+        # ONLY exit 0 is a pass. A blocked run (3), a run that never obtained
+        # its pages (5) and a partial run (6) all mean the site was not fully
+        # tested, so each is red with the reason written to the step summary;
+        # so are a crash (1), bad arguments (2) and zero rows (4). Access
+        # problems are not code defects, but a canary that goes green when it
+        # tested nothing is worse than one that says "fix the access".
         run: |
           set -e
           code="${{ steps.run.outputs.exit_code }}"
           tested=true
+          # A parser failure is a regression whatever the exit code says:
+          # exit 5/6 would otherwise be downgraded to a warning below.
+          if grep -q "parser_found_nothing" canary_run.log; then
+            echo "::error::A page was served with ads in its payload and parsed to 0 rows (stop_reason parser_found_nothing, exit $code). The payload shape or the parser moved — this is the regression this canary exists to catch. The HTML dump in the artefacts shows what was served."
+            exit 1
+          fi
           case "$code" in
             0)
               echo "OK — ads parsed from a live run." ;;
             3)
-              tested=false
-              echo "::warning::Blocked before parsing (exit 3) — an ACCESS condition, not a code defect, so this run is not failed. On this site a block means the exit is not in the UAE: check that country-ae is in the endpoint's login. There is no challenge on the page to solve and no captcha key would help."
+              echo "::error::Blocked before parsing (exit 3), so nothing was tested. On this site a block means the exit is not in the UAE: check that country-ae is in the endpoint's login. There is no challenge on the page to solve and no captcha key would help."
               echo "### Canary did NOT test anything (exit 3, blocked)" >> "$GITHUB_STEP_SUMMARY"
-              echo "The site did not serve the request, so the parser was not exercised. This is access, not a regression — the first thing to check is the exit's COUNTRY, not the browser." >> "$GITHUB_STEP_SUMMARY" ;;
+              echo "The site did not serve the request, so the parser was not exercised. This is access, not a regression — the first thing to check is the exit's COUNTRY, not the browser." >> "$GITHUB_STEP_SUMMARY"
+              exit 1 ;;
             5)
-              tested=false
-              echo "::warning::Remote API error (exit 5) — the Scraping Browser endpoint refused the connection, so nothing was tested and this run is not failed. If the log says 'profile_locked', another run still holds this pid: give CI its own. Otherwise the DUBIZZLE_CDP_ENDPOINT secret has most likely expired and needs refreshing."
-              echo "### Canary did NOT test anything (exit 5, endpoint refused)" >> "$GITHUB_STEP_SUMMARY"
-              echo "The most likely cause is an expired \`DUBIZZLE_CDP_ENDPOINT\` secret. Refresh it, or remove it to go back to the explicit SKIP path." >> "$GITHUB_STEP_SUMMARY" ;;
+              echo "::error::Content never obtained (exit 5), so nothing was tested. The log names the cause: 'profile_locked' means another run still holds this pid (give CI its own); an HTTP 401 means the DUBIZZLE_CDP_ENDPOINT credential is no longer accepted and needs refreshing; a navigation timeout is neither."
+              echo "### Canary did NOT test anything (exit 5, content never obtained)" >> "$GITHUB_STEP_SUMMARY"
+              echo "Read the run log for the cause (profile_locked, an HTTP 401 on the endpoint, or a navigation timeout) before refreshing the \`DUBIZZLE_CDP_ENDPOINT\` secret." >> "$GITHUB_STEP_SUMMARY"
+              exit 1 ;;
             6)
-              tested=false
-              echo "::warning::Partial run (exit 6) — some pages were gathered and the run then stopped early. canary_run.meta.json names which pages failed. Not failed, because on this site that is usually an access condition; if it repeats on every run, suspect pagination instead."
+              echo "::error::Partial run (exit 6) — some pages were gathered and the run then stopped early. canary_run.meta.json names which pages failed."
               echo "### Canary tested only PART of the run (exit 6)" >> "$GITHUB_STEP_SUMMARY"
-              echo "See \`pages_failed\` in the sidecar artefact." >> "$GITHUB_STEP_SUMMARY" ;;
+              echo "See \`pages_failed\` in the sidecar artefact." >> "$GITHUB_STEP_SUMMARY"
+              exit 1 ;;
             4)
               echo "::error::Ran fine but parsed 0 rows (exit 4) on a motors listing that holds 25 ads per page. Either the Redux action the payload lives in (listings/fetchListingDataForQuery/fulfilled) or the ad-URL pattern the DOM fallback anchors on has moved — this is the regression this canary exists to catch. The HTML dump in the artefacts tells you which."
               exit 1 ;;
@@ -209,7 +198,7 @@ jobs:
         # Only when the run actually got in. On a blocked or refused run
         # there is no output file to check, and a missing file would fail for
         # the wrong reason.
-        if: env.HAVE_CDP == 'true' && steps.verdict.outputs.tested == 'true'
+        if: env.HAVE_CDP == 'true'
         # Exit 0 only means "some rows were written". It says nothing about
         # whether the page actually rendered: a snapshot taken too early
         # still writes rows, just with fields empty. Every floor below is set
@@ -252,7 +241,7 @@ jobs:
                           f"read has most likely broken")
 
           # A row with no price must carry no currency, and vice versa. A
-          # missing currency is null, never a default (§4).
+          # missing currency is null, never a default.
           mismatched = [r.get("sku") for r in rows
                         if (r.get("price") is None) != (r.get("currency") is None)]
           if mismatched:
@@ -311,7 +300,7 @@ jobs:
                   fail.append(f"{got}/{len(rows)} motors rows have `{field}`, "
                               f"which only a property ad publishes")
 
-          # §4's guard, one line, and it catches the regression forever.
+          # One line, a guard against the was-price regression, and it catches the regression forever.
           bad = [r.get("sku") for r in rows
                  if r.get("original_price") is not None
                  and r.get("price") is not None
@@ -345,10 +334,9 @@ jobs:
           kinds = {r.get("listing_kind") for r in rows}
           if kinds - {"organic", "car_of_the_week"}:
               fail.append(f"unknown listing_kind(s) {sorted(kinds)}")
-          if "car_of_the_week" not in kinds:
-              fail.append("no row is labelled car_of_the_week - every motors "
-                          "page carries one, so the promoted slot is being "
-                          "passed off as a result")
+          # Whether a promoted slot is present is the site's merchandising
+          # and is not required; when one IS present it must be labelled
+          # (the unknown-kind check above).
 
           # `position` restarts at 1 on each page, so the pair is the key.
           pairs = [(r.get("page"), r.get("position")) for r in rows]
@@ -406,6 +394,7 @@ jobs:
             canary_run.csv
             canary_run.meta.json
             canary_run.html*
+            canary_run.log
             canary_run_page*_debug.*
           if-no-files-found: ignore
           retention-days: 14

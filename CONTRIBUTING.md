@@ -86,13 +86,13 @@ Then the rest of the presentation, in the order that matters:
 
 1. `python3 smoke_test.py` green, and the canary dispatched at least once —
    including its SKIP branch, which is what runs when the
-   `DUBIZZLE_CDP_ENDPOINT` secret is absent. The canary has **no schedule**: a
-   Scraping Browser credential on this account does not survive a day, so it
-   runs on demand with a fresh secret rather than painting a badge that has
-   tested nothing. Put a schedule back the day a long-lived credential
-   exists.
-2. The repo description, homepage and topics set (see the family notes on
-   what those should say).
+   `DUBIZZLE_CDP_ENDPOINT` secret is absent. The canary has **no schedule**
+   and runs on demand. How long a Scraping Browser credential stays valid has
+   not been measured on this repo, so re-measure it before deciding whether
+   to put a schedule back.
+2. The repo description, homepage and topics set: a description that names
+   the engines and the 2Captcha Scraping Browser API, `https://2captcha.com`
+   as the homepage, and topics people actually search for.
 3. Only then the row in the org profile README — and check it with an
    ANONYMOUS request rather than your own logged-in browser. A row pointing
    at a private repo is a 404 for every visitor, which costs more trust than

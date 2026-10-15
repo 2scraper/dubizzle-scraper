@@ -67,7 +67,7 @@ class Product:
     # The listing's own absolute URL, on its emirate subdomain — the address
     # the site itself publishes, not one rebuilt from the browsed host. Two
     # sibling repos lost a whole column by rebuilding a URL that the page
-    # then never matched (§5).
+    # then never matched.
     url: str = ""
     # The listing's URL PATH, with a leading `/ar` stripped and no trailing
     # slash.
@@ -100,7 +100,7 @@ class Product:
     #
     # Deliberately NOT derived by splitting a title or reading the URL's
     # make segment. Both would be a guess wearing the costume of a fact
-    # (§8), and the URL segment is the CATEGORY's make, which for a listing
+    #, and the URL segment is the CATEGORY's make, which for a listing
     # filed under the wrong node is not the car's.
     brand: Optional[str] = None
     # What the seller is asking. An integer in the site's payload — no
@@ -117,7 +117,7 @@ class Product:
     # motors and property JSON-LD state `priceCurrency: "AED"` outright, and
     # the tile prints the ISO code `AED` in its own node beside the amount.
     # Still null rather than defaulted when there is no price — a row with
-    # no price has no currency either (§4).
+    # no price has no currency either.
     currency: Optional[str] = None
     # The was-price, from `pre_discount_price`. Sparse ON PURPOSE and worth
     # keeping: only a promoted "Car of the Week" or a classified listing
@@ -128,7 +128,7 @@ class Product:
     # Computed from the two prices, never read off the printed badge, and
     # None rather than 0 or a negative when `original_price` is not above
     # `price` — two figures that are not what they were taken for should
-    # produce no number at all (§4).
+    # produce no number at all.
     discount_pct: Optional[float] = None
     # Null on every listing row of every run measured so far, and kept only
     # because it is in the family prefix: this site rates SELLERS on a
@@ -307,6 +307,20 @@ def dedupe_by_sku(rows: Sequence[Any], seen: Set[str]) -> List[Any]:
 # handled) is neither readable nor parseable by anything but Python.
 LIST_CSV_SEPARATOR = " | "
 
+# A CSV cell beginning with one of these is evaluated as a formula by Excel,
+# Google Sheets and LibreOffice. Every string in a row here was written by
+# whoever posted the ad, so a title such as `=HYPERLINK(...)` would otherwise
+# reach a spreadsheet as live code. `=`, `+`, `-` and `@` are the classic
+# shapes; the tab and the newlines are here because some readers strip a
+# leading one, which exposes whatever follows it.
+CSV_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+# Prefixed to a cell that would otherwise be read as a formula. Spreadsheets
+# treat the apostrophe as "the rest of this cell is text" and do not show it;
+# a consumer parsing the CSV with `csv` sees it, which is why the count goes
+# in the sidecar rather than staying silent.
+CSV_FORMULA_ESCAPE = "'"
+
 
 def _csv_value(v: Any) -> Any:
     if isinstance(v, (list, tuple)):
@@ -319,12 +333,27 @@ def _csv_value(v: Any) -> Any:
     return v
 
 
+def _csv_escape(v: Any) -> Any:
+    """Neutralise a formula-shaped cell. Returns (value, was_escaped).
+
+    Only STRINGS are touched. Escaping a number would turn `-5` into the text
+    `'-5` and break every sum a consumer writes over the column.
+
+    CSV only. The JSON output keeps the site's bytes exactly as served, so
+    the two files deliberately differ; `csv_cells_escaped` in the sidecar is
+    what declares that divergence instead of leaving it to be discovered.
+    """
+    if isinstance(v, str) and v.startswith(CSV_FORMULA_LEADS):
+        return CSV_FORMULA_ESCAPE + v, True
+    return v, False
+
+
 def write_json(rows: Sequence[Any], path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump([asdict(r) for r in rows], f, ensure_ascii=False, indent=2)
 
 
-def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Product) -> None:
+def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Product) -> int:
     # An empty result still gets the header row. A zero-byte file makes a
     # consumer fail on read (no columns to parse) instead of reading a valid
     # table with zero rows — and "an empty result is still a well-formed
@@ -332,12 +361,24 @@ def write_csv(rows: Sequence[Any], path: str, row_cls: Type = Product) -> None:
     #
     # The header comes from `row_cls`, not from the first row, so an empty
     # run still writes the columns of the mode that produced it.
+    #
+    # Returns how many cells were formula-escaped (see _csv_escape).
     fieldnames = [f.name for f in fields(row_cls)]
+    escaped = 0
     with open(path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in rows:
-            writer.writerow({k: _csv_value(v) for k, v in asdict(r).items()})
+            row = {}
+            for k, v in asdict(r).items():
+                # Escape AFTER `_csv_value`: a list joined into one cell is
+                # text too, and its first element can be formula-shaped
+                # while the list itself is not a string.
+                value, was_escaped = _csv_escape(_csv_value(v))
+                row[k] = value
+                escaped += was_escaped
+            writer.writerow(row)
+    return escaped
 
 
 # Exit code used when a run completes but produced nothing. Distinct from 1
@@ -478,7 +519,8 @@ def run_meta(status: str, stop_reason: str, pages_requested: int,
 
 
 def save(rows: Sequence[Any], out_prefix: str, fmt: str,
-         allow_empty: bool = False, row_cls: Type = Product) -> int:
+         allow_empty: bool = False, row_cls: Type = Product,
+         stats: Optional[dict] = None) -> int:
     """Write JSON/CSV and return a process exit code.
 
     Returns 0 when rows were written, EXIT_NO_PRODUCTS when there were none.
@@ -505,8 +547,19 @@ def save(rows: Sequence[Any], out_prefix: str, fmt: str,
         write_json(rows, f"{out_prefix}.json")
         print(f"[+] Saved {len(rows)} products -> {out_prefix}.json")
     if fmt in ("csv", "both"):
-        write_csv(rows, f"{out_prefix}.csv", row_cls=row_cls)
+        escaped = write_csv(rows, f"{out_prefix}.csv", row_cls=row_cls)
         print(f"[+] Saved {len(rows)} products -> {out_prefix}.csv")
+        # Reported through `stats` rather than as a return value because
+        # this function's return IS the exit code. The caller threads it
+        # into the sidecar, where a consumer comparing the CSV against the
+        # JSON can see that they diverge and by how much.
+        if stats is not None:
+            stats["csv_cells_escaped"] = escaped
+        if escaped:
+            print(f"[!] {escaped} CSV cell(s) began with a formula character "
+                  f"and were prefixed with {CSV_FORMULA_ESCAPE!r} so a "
+                  f"spreadsheet reads them as text. The JSON output is "
+                  f"unchanged — see csv_cells_escaped in the sidecar.")
     return 0 if rows else EXIT_NO_PRODUCTS
 
 
@@ -561,12 +614,20 @@ def finish_run(rows: Sequence[Any], out_prefix: str, fmt: str,
     # names has a hole for every name nobody added to it.
     complete = stop_reason in COMPLETE_STOP_REASONS and not pages_failed
     row_cls = ROW_CLASS_BY_MODE.get(mode, Product)
-    rc = save(rows, out_prefix, fmt, allow_empty=allow_empty, row_cls=row_cls)
+    write_stats: dict = {}
+    rc = save(rows, out_prefix, fmt, allow_empty=allow_empty, row_cls=row_cls,
+              stats=write_stats)
     wrote_output = bool(rows) or allow_empty
 
     if wrote_output:
         status = "complete" if (rows and complete) else (
             "partial" if rows else "failed")
+        # The CSV/JSON divergence is a property of THIS run's output, so it
+        # belongs beside the other run facts. Merged UNDER the caller's
+        # `extra`: an engine's own extras win a name collision, because a
+        # collision here would be housekeeping silently dropping site data.
+        if write_stats:
+            extra = {**write_stats, **(extra or {})}
         write_run_meta(out_prefix, run_meta(
             status=status, stop_reason=stop_reason,
             pages_requested=pages_requested, pages_completed=pages_completed,

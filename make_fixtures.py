@@ -85,7 +85,7 @@ SOURCES = {
 # that `position` increments or that a dedupe has anything to do.
 KEEP_ADS = 2
 
-# Patterns, not literals, so the NEXT capture's values are caught too (§10).
+# Patterns, not literals, so the NEXT capture's values are caught too.
 SCRUB = [
     # A real person's name, on every property tile.
     (re.compile(r'("agent_profile":\s*\{(?:[^{}]|\{[^{}]*\})*?"name":\s*\{"en":\s*)"[^"]*"(,\s*"ar":\s*)"[^"]*"'),
@@ -309,7 +309,7 @@ def main():
             "expect_state": P.detect_page_state(trimmed, status, url),
             "expect_rows": len(after),
             "expect_skus": sorted(after),
-            # Pinned VALUES, not coverage (§10): a column can be 100%
+            # Pinned VALUES, not coverage: a column can be 100%
             # populated and entirely wrong.
             "expect": {sku: {f: getattr(after[sku], f)
                              for f in after[sku].__dataclass_fields__
@@ -363,7 +363,7 @@ def cut_sample(run="live_p1.json"):
     """Cut `sample_output.{json,csv}` from a real run's output.
 
     Shipped here rather than as a second script because CI checks the sample
-    against the schema on every push (§10) and a reader who changes a column
+    against the schema on every push and a reader who changes a column
     needs one obvious way to regenerate it:
 
         python3 playwright_scraper.py --url ... --out live_p1 --format json

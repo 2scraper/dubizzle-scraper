@@ -17,7 +17,54 @@ user would notice, the release notes say so first.
 > script of yours passes 0, pass **1**: the flag counts ATTEMPTS, so 1 means
 > "try once and do not retry".
 
+> **Behaviour change:** a served listing whose payload names ads but parses
+> to zero rows now ends with `stop_reason: parser_found_nothing` and exit 5
+> (exit 6 if earlier pages gave rows). It used to be exit 4 ("nothing
+> listed") on page 1 and a complete run with exit 0 on page 2 or later.
+
+> **Behaviour change:** `--pages 0`, `--concurrency 0` and negative
+> `--delay`, `--retry-delay` or `--proxy-block-retries` (and, in
+> `scraper_api_client.py`, negative `--retries`/`--retry-delay` or a
+> `--timeout` below 1) are now usage errors (exit 2) naming the flag.
+
+> **Behaviour change:** the CSV output prefixes an apostrophe to any text
+> cell that begins with `=`, `+`, `-`, `@`, a tab or a line break, so a
+> spreadsheet reads it as text. JSON is unchanged; the sidecar records
+> `csv_cells_escaped`.
+
 ### Fixed
+
+- **A paid solve was budgeted at one of its two call sites.** Each engine
+  checks for a challenge right after navigation and again after
+  classification; only the second was counted, so with the solver stubbed
+  one challenged page bought 3 tokens against `SOLVES_PER_PAGE = 1`. Both
+  call sites now go through one `page_flow.SolveBudget`, checked immediately
+  before the purchase and not reset by a retry or a rotation. A source check
+  and a stubbed run of every engine pin it.
+- **pyppeteer crashed when a page failed to load and no proxy was set**
+  (`AttributeError` on `pool.advance`, exit 1). It now rotates only when there
+  is a pool, as the Playwright engine does, and reports the failed load.
+- **The HTTP status never reached the classifier**, so dubizzle's own 404 was
+  read as an unpainted page, waited on and parsed. Playwright and pyppeteer
+  now pass it; Selenium, which has no status, recognises the 404 from its
+  body (`product_parser.is_not_found_page`).
+- **Formula-shaped CSV cells** (seller-written titles such as
+  `=HYPERLINK(...)`) are neutralised in CSV only.
+- **The canary now passes only when it actually tested the site.** Without
+  the `DUBIZZLE_CDP_ENDPOINT` secret it fails and names the secret (it used
+  to skip green); exit 3, 5 and 6 are red with the reason in the step
+  summary (they used to be warnings); a logged `parser_found_nothing` is red
+  as a parser failure; it runs weekly as well as on demand; and it no longer
+  requires a promoted "car of the week" row, which is merchandising rather
+  than parsing.
+- `.gitignore` and the tracked-capture check now cover working directories
+  by kind (`live/`, `out/`, `runs/`, `tmp/`, `dumps/`, ...) and bare HTML
+  files at the root.
+- Comments, help text and the Dockerfile example no longer describe another
+  site's search grid, tracking parameters or scroll counts; the README's
+  exit-code line says what 5 means now; references to private notes were
+  replaced by the rule in plain words, and a suite check keeps them out. The
+  wording check now scans the suite file too.
 
 - **`--retries 0` fetched nothing and called it a result.** The load loop is
   `range(1, retries + 1)`, so 0 never runs it and the engine judged
