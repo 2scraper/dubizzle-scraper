@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dubizzle-scraper"
-version = "0.1.1"
+version = "0.2.0"
 description = "dubizzle UAE classifieds scraper: cars, property, electronics, jobs and community listings to JSON or CSV."
 readme = "README.md"
 license = "MIT"

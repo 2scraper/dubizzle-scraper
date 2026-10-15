@@ -10,6 +10,8 @@ user would notice, the release notes say so first.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-15
+
 > **Behaviour change:** `--retries 0` is now a usage error (exit 2). It used
 > to be accepted and made the page-load loop unreachable, so nothing was
 > fetched and the engine reported the browser's own blank page as a result:
@@ -138,10 +140,6 @@ user would notice, the release notes say so first.
   both. "Supported versions" now names the latest release and `main`.
 - `captcha_solver.py`'s docstring pointed at a "No DataDome solver" section
   that does not exist in this repo (it came with the copied core). Removed.
-
-## [0.1.1] — 2026-09-16
-
-### Fixed
 
 - **Fifteen lines of unreachable code removed from `playwright_scraper.py`.**
   A function's `def` line had been lost at some point before this repo's
@@ -292,4 +290,5 @@ found them:
   been committed so the decision is taken once, in writing, before
   publication.
 
+[0.2.0]: https://github.com/2scraper/dubizzle-scraper/releases/tag/v0.2.0
 [0.1.0]: https://github.com/2scraper/dubizzle-scraper/releases/tag/v0.1.0
