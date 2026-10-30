@@ -1,4 +1,4 @@
-# dubizzle-scraper
+# dubizzle Scraper — UAE Cars, Property and Classified Ads in Python
 
 [![release](https://img.shields.io/github/v/release/2scraper/dubizzle-scraper?sort=semver)](https://github.com/2scraper/dubizzle-scraper/releases)
 [![tests](https://github.com/2scraper/dubizzle-scraper/actions/workflows/tests.yml/badge.svg)](https://github.com/2scraper/dubizzle-scraper/actions/workflows/tests.yml)
@@ -7,6 +7,8 @@
 [![licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
 [![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20pyppeteer%20%7C%20CDP-informational)](#engines)
 [![needs a UAE exit](https://img.shields.io/badge/needs-a%20UAE%20exit-orange)](#do-you-need-any-of-the-paid-products)
+
+**dubizzle scraper** — an open-source (MIT) Python tool that reads uae.dubizzle.com classifieds — cars, property, electronics, jobs and community services — and writes price, currency, city, seller, year, kilometers and listing attributes to JSON or CSV. The exit address has to be in the UAE: measured on 2026-09-14 against `/motors/used-cars/`, Imperva refused every exit outside it, and a UAE residential exit in a headless browser was served the full catalogue. Use it to build a dataset of UAE car and property listings, or compare two runs with `diff_runs.py`.
 
 Scrapes [dubizzle](https://uae.dubizzle.com) UAE classifieds — cars, property,
 electronics, jobs and community services — to JSON or CSV, with four
@@ -526,6 +528,23 @@ person's run gets `profile_locked` and reports a failure that has nothing to
 do with the site.
 
 ---
+
+## Guides
+
+- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+
+## Related scrapers
+
+Same CLI conventions, same output contract (one row per item, JSON or CSV, a `.meta.json` sidecar and shared exit codes):
+
+- [Facebook Marketplace scraper](https://github.com/2scraper/facebook-marketplace-scraper) — Marketplace listings by keyword, category, location…
+- [MakeMyTrip scraper](https://github.com/2scraper/makemytrip-scraper) — Hotel prices with taxes and fees, ratings, stars…
+- [Skyscanner scraper](https://github.com/2scraper/skyscanner-scraper) — Route and dates in — every itinerary with price, airline…
+- [Spinny scraper](https://github.com/2scraper/spinny-scraper) — Used-car listings and car detail pages
+- [Vrbo scraper](https://github.com/2scraper/vrbo-scraper) — Vacation rental prices, ratings and property details…
+- [Webmotors scraper](https://github.com/2scraper/webmotors-scraper) — Car and motorcycle listings from Brazil's webmotors.com.br…
+
+All scrapers: [github.com/2scraper](https://github.com/2scraper) · Need another site? [Open a request](https://github.com/2scraper/.github/issues/new?title=%5BScraper%20request%5D%20)
 
 ## Contributing, security, licence
 
