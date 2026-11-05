@@ -10,6 +10,10 @@ user would notice, the release notes say so first.
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: the scheduled canary now starts at 07:47 UTC (Mondays) instead of 06:23, so canaries that share one Scraping Browser profile no longer start at the same time and lock each other out.
+
 ## [0.2.0] — 2026-10-15
 
 > **Behaviour change:** `--retries 0` is now a usage error (exit 2). It used
